@@ -3,7 +3,13 @@
 AI-assisted AWS cloud misconfiguration detection and remediation tool, built for
 resource-constrained IT startups. Scans a live AWS account read-only, structures
 findings as JSON, and uses Groq to generate plain-language risk explanations and
-concrete remediation steps for each one. Results are shown in a Streamlit dashboard.
+concrete remediation steps for each one.
+
+Two front ends share the same detection backend:
+- A **Streamlit dashboard** (`dashboard/app.py`) — quick, single-file, good for a fast check.
+- A **React web app** (`frontend/` + `api/`) — six tabs (Overview, Findings, Resources,
+  Compliance, History, Settings), a security score, scan history trends, and a PDF
+  report export. This is the more polished, thesis-presentation-facing UI.
 
 ## Status
 
@@ -11,26 +17,37 @@ concrete remediation steps for each one. Results are shown in a Streamlit dashbo
 - ✅ IAM: overly permissive policies, missing MFA, unused access keys, root account MFA/access keys
 - ✅ Security groups: 0.0.0.0/0 / ::/0 on ports 22/3389/3306/5432
 
+Every check records **both** a pass and a fail outcome internally (see "CheckResult
+vs Finding" below), which is what powers the Resources tab, the Compliance tab, and
+the security score.
+
 ## Project layout
 
 ```
 backend/
   config.py              # loads AWS/Groq settings from env vars / .env
-  models.py              # Finding / Severity data model
-  scanner.py             # orchestrates all detectors
+  models.py              # Finding / CheckResult / Severity data model
+  scanner.py             # run_scan() (findings only) + run_full_scan() (all checks)
+  scoring.py             # server-side security score (single source of truth)
+  history.py             # scan history persistence (data/scan_history.json)
   detectors/
     s3_detector.py         # implemented
     iam_detector.py        # implemented
     sg_detector.py         # implemented
   ai/
     groq_client.py         # Groq (OpenAI-compatible) explanation generator
+api/
+  main.py                  # FastAPI backend for the React web app
+frontend/                  # Vite + React + TypeScript + Tailwind + shadcn/ui web app
 dashboard/
-  app.py                   # Streamlit UI
+  app.py                   # Streamlit UI (alternative front end, still works standalone)
+data/
+  scan_history.json        # gitignored, created on first scan via the web app
 ```
 
 ## Setup
 
-1. Create a virtualenv and install dependencies:
+1. Python dependencies:
 
    ```bash
    python -m venv venv
@@ -45,9 +62,10 @@ dashboard/
    ```
 
    - **AWS**: either set `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` in `.env`,
-     set `AWS_PROFILE` to a profile already configured in `~/.aws/credentials`,
-     or leave both blank to use an existing default profile / instance role.
-     **Never commit real keys** — `.env` is already git-ignored.
+     set `AWS_PROFILE` to a profile already configured in `~/.aws/credentials`
+     (including an `aws sso login`-based profile), or leave both blank to use an
+     existing default profile / instance role. **Never commit real keys** — `.env`
+     is already git-ignored.
    - **Groq**: get an API key from https://console.groq.com and set `GROQ_API_KEY`.
 
 3. Create a read-only IAM user/role for scanning. Minimum policy for the current
@@ -89,7 +107,22 @@ dashboard/
    }
    ```
 
-   This is intentionally read-only — the tool never modifies your account.
+   This is intentionally read-only — the tool never modifies your account. If you
+   run the `scripts/create_test_*.py` fixtures (see below), they need extra
+   *temporary* write permissions of their own — remove those again afterwards.
+
+4. **Only if you want the React web app** (the Streamlit dashboard needs nothing
+   beyond step 1): install Node.js. This project uses `nvm` so it doesn't need
+   `sudo`:
+
+   ```bash
+   curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash
+   export NVM_DIR="$HOME/.nvm" && \. "$NVM_DIR/nvm.sh"
+   nvm install --lts
+
+   cd frontend
+   npm install
+   ```
 
 ## Running the scanner standalone
 
@@ -102,6 +135,89 @@ python -m backend.detectors.sg_detector   # security-group findings only, printe
 python -m backend.scanner                 # full scan (S3 + IAM + security groups)
 ```
 
+## Running the Streamlit dashboard
+
+```bash
+streamlit run dashboard/app.py
+```
+
+Click **Run Scan**, then expand any finding to see its raw AWS detail and
+request an AI-generated risk explanation + remediation steps from Groq.
+
+## Running the React web app
+
+Two processes: the FastAPI backend and the Vite dev server (which proxies `/api/*`
+to it, so there's no CORS setup needed).
+
+```bash
+# terminal 1
+python -m uvicorn api.main:app --reload --port 8000
+
+# terminal 2
+cd frontend
+npm run dev -- --port 5173
+```
+
+Open http://localhost:5173. The FastAPI backend's interactive docs are at
+http://localhost:8000/docs.
+
+**Single-process demo mode** (what to use for an actual presentation/defense —
+no separate dev server, no internet dependency for the UI itself, everything on
+one port):
+
+```bash
+cd frontend && npm run build && cd ..
+python -m uvicorn api.main:app --port 8000
+```
+
+Open http://localhost:8000 — FastAPI serves the built React app directly
+(`frontend/dist/`) alongside the API.
+
+### The six tabs
+
+- **Overview** — security score gauge, severity breakdown, per-resource-type
+  counts, latest findings.
+- **Findings** — searchable/filterable table of failures only, click a row to
+  expand it inline for raw detail + an on-demand AI explanation, "Download
+  Report" for a PDF export.
+- **Resources** — every check performed against every resource, pass *and*
+  fail, not just misconfigurations.
+- **Compliance** — findings grouped by CIS AWS Foundations Benchmark v1.5.0
+  control (best-effort mapping — see caveat below).
+- **History** — score and finding-count trend across past scans, persisted to
+  `data/scan_history.json`.
+- **Settings** — current AWS/Groq config (read-only) plus a live-editable
+  "unused access key" threshold that takes effect on the next scan with no
+  restart needed.
+
+## CheckResult vs Finding
+
+Each detector's internal checks record a `CheckResult` (pass or fail) for every
+check performed, not just failures. `Finding` (what the Streamlit dashboard, the
+`/api/findings` endpoint, and `run_scan()` all use) is just the FAIL subset —
+`CheckResult.to_finding()` returns `None` for a pass. `run_full_scan()` /
+`/api/resources` expose the complete picture, which is what makes the Resources
+tab and the Compliance tab possible without a separate resource inventory pass.
+
+## Security score
+
+`backend/scoring.py` computes a severity-weighted heuristic (deduct points per
+finding — CRITICAL −25, HIGH −15, MEDIUM −8, LOW −3 — floored at 0), **not** a
+literal "% of checks passed." It's the single source of truth for both the live
+Overview card and the persisted History records, so they can't disagree about
+the score for a given scan.
+
+## Compliance mapping caveat
+
+`frontend/src/lib/compliance.ts` maps check types to **CIS AWS Foundations
+Benchmark v1.5.0** control numbers. Control numbers have shifted across
+benchmark releases (v1.2/v1.4/v1.5/v3.0) — this is a best-effort mapping for a
+single cited version, not verified against the official PDF. Checks without a
+confident, dedicated control (S3 checks, and the MySQL/PostgreSQL ports in
+`SG_OPEN_SENSITIVE_PORT` — only 22/3389 are explicitly named in the benchmark)
+are labeled "N/A" rather than given a fabricated number. Verify against the
+official benchmark document before citing any of this formally.
+
 ## Testing against a throwaway bucket
 
 If you don't already have a misconfigured bucket to test against, `scripts/create_test_bucket.py`
@@ -110,7 +226,8 @@ creates one for you: public read access + versioning disabled (a `awsdetect-test
 This is a **write** operation, so it needs more than the read-only policy above — either
 attach `AmazonS3FullAccess` temporarily to your test IAM user, or add
 `s3:CreateBucket`, `s3:PutBucketPolicy`, `s3:PutBucketPublicAccessBlock`,
-`s3:DeleteBucket`, `s3:DeleteObject` to it.
+`s3:DeleteBucket`, `s3:DeleteObject` to it. **Remove the temporary policy again once
+you're done testing.**
 
 ```bash
 python -m scripts.create_test_bucket
@@ -138,7 +255,9 @@ This also needs write permissions beyond the read-only policy above — either a
 `iam:CreateUser`, `iam:PutUserPolicy`, `iam:CreateLoginProfile`, `iam:CreateAccessKey`,
 `iam:DeleteUserPolicy`, `iam:DetachUserPolicy`, `iam:DeleteLoginProfile`,
 `iam:DeactivateMFADevice`, `iam:DeleteAccessKey`, `iam:DeleteUser` on resources matching
-`arn:aws:iam::*:user/awsdetect-test-*`.
+`arn:aws:iam::*:user/awsdetect-test-*`. **This scoping means the policy can only clean
+up `awsdetect-test-*` users, not modify your own real IAM user — remove it manually via
+the console once you're done testing.**
 
 ```bash
 python -m scripts.create_test_iam_user
@@ -152,7 +271,8 @@ python -m scripts.destroy_test_iam_user <user-name>
 
 Note: `IAM_UNUSED_ACCESS_KEY` won't fire on a freshly created key, since it hasn't been
 inactive for `IAM_UNUSED_KEY_DAYS` (default 90) yet. Set `IAM_UNUSED_KEY_DAYS=0` in `.env`
-temporarily to see that check trigger immediately, then reset it back to 90 for real scans.
+(CLI/Streamlit) or via the web app's **Settings** tab (takes effect immediately, no
+restart) to see that check trigger right away, then reset it back to 90 for real scans.
 
 `ROOT_NO_MFA` and `ROOT_ACCESS_KEYS_PRESENT` check your account's actual root user via
 `iam:GetAccountSummary` -- there's no safe way to fabricate a test fixture for these (you
@@ -167,7 +287,8 @@ group in your account's default VPC with SSH (port 22) open to `0.0.0.0/0`.
 This also needs write permissions beyond the read-only policy above — either attach
 `AmazonEC2FullAccess` temporarily to your test IAM user, or scope an inline policy to
 `ec2:CreateSecurityGroup`, `ec2:AuthorizeSecurityGroupIngress`, `ec2:DeleteSecurityGroup`,
-and `ec2:DescribeVpcs` (needed by the script to find the default VPC).
+and `ec2:DescribeVpcs` (needed by the script to find the default VPC). **Remove the
+temporary policy again once you're done testing.**
 
 ```bash
 python -m scripts.create_test_security_group
@@ -183,18 +304,9 @@ Note: the detector only scans the region your session is configured for (`AWS_RE
 Security groups are region-scoped, so re-run with a different `AWS_REGION` to check other
 regions.
 
-## Running the dashboard
-
-```bash
-streamlit run dashboard/app.py
-```
-
-Click **Run Scan**, then expand any finding to see its raw AWS detail and
-request an AI-generated risk explanation + remediation steps from Groq.
-
 ## Finding shape
 
-Every finding follows this JSON structure:
+Every finding (a *failed* check) follows this JSON structure:
 
 ```json
 {
@@ -207,3 +319,7 @@ Every finding follows this JSON structure:
   "region": "us-east-1"
 }
 ```
+
+A `CheckResult` (from `run_full_scan()` / `GET /api/resources`) is the same shape
+plus a `status` field (`"PASS"` or `"FAIL"`) and a nullable `severity` (`null` on
+a pass).
