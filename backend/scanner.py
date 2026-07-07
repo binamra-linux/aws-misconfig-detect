@@ -3,7 +3,9 @@ from typing import List
 import boto3
 
 from backend import config
+from backend.detectors.iam_detector import scan_iam
 from backend.detectors.s3_detector import scan_s3
+from backend.detectors.sg_detector import scan_security_groups
 from backend.models import Finding
 
 
@@ -18,8 +20,8 @@ def run_scan() -> List[Finding]:
     findings: List[Finding] = []
 
     findings.extend(scan_s3(session))
-    # Phase 2: findings.extend(scan_iam(session))
-    # Phase 3: findings.extend(scan_security_groups(session))
+    findings.extend(scan_iam(session))
+    findings.extend(scan_security_groups(session))
 
     return findings
 

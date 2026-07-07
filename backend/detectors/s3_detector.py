@@ -153,5 +153,7 @@ def scan_s3(session: Optional[boto3.Session] = None) -> List[Finding]:
 if __name__ == "__main__":
     import json
 
-    results = scan_s3()
+    from backend.scanner import build_session
+
+    results = scan_s3(build_session())
     print(json.dumps([f.to_dict() for f in results], indent=2))
