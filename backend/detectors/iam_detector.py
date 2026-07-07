@@ -7,13 +7,17 @@ Read-only IAM misconfiguration checks:
     (CIS AWS Foundations Benchmark 1.2)
   - access keys that are Active but unused for IAM_UNUSED_KEY_DAYS+ days
     (or never used), per config.IAM_UNUSED_KEY_DAYS
+  - root account has no MFA enabled, or still has access keys
+    (CIS AWS Foundations Benchmark 1.5 / 1.13 -- the single highest-impact
+    check here, since the root user can't be restricted by any policy)
 
 Required IAM permissions (read-only):
   iam:ListUsers, iam:ListUserPolicies, iam:GetUserPolicy,
   iam:ListAttachedUserPolicies, iam:ListGroupsForUser,
   iam:ListGroupPolicies, iam:GetGroupPolicy, iam:ListAttachedGroupPolicies,
   iam:GetPolicy, iam:GetPolicyVersion, iam:GetLoginProfile,
-  iam:ListMFADevices, iam:ListAccessKeys, iam:GetAccessKeyLastUsed
+  iam:ListMFADevices, iam:ListAccessKeys, iam:GetAccessKeyLastUsed,
+  iam:GetAccountSummary
 """
 
 from datetime import datetime, timezone
@@ -152,10 +156,49 @@ def _check_unused_access_keys(iam, user_name: str) -> List[Finding]:
     return findings
 
 
+def _check_root_account(iam) -> List[Finding]:
+    summary = iam.get_account_summary()["SummaryMap"]
+    findings: List[Finding] = []
+
+    if summary.get("AccountMFAEnabled", 0) == 0:
+        findings.append(Finding(
+            resource_id="root",
+            resource_type="IAMRootAccount",
+            check_type="ROOT_NO_MFA",
+            severity=Severity.CRITICAL,
+            description="The AWS account root user does not have MFA enabled.",
+            detail={"AccountMFAEnabled": summary.get("AccountMFAEnabled")},
+        ))
+
+    if summary.get("AccountAccessKeysPresent", 0) != 0:
+        findings.append(Finding(
+            resource_id="root",
+            resource_type="IAMRootAccount",
+            check_type="ROOT_ACCESS_KEYS_PRESENT",
+            severity=Severity.CRITICAL,
+            description="The AWS account root user has active access keys. The root user should never have access keys.",
+            detail={"AccountAccessKeysPresent": summary.get("AccountAccessKeysPresent")},
+        ))
+
+    return findings
+
+
 def scan_iam(session: Optional[boto3.Session] = None) -> List[Finding]:
     session = session or boto3.Session()
     iam = session.client("iam")
     findings: List[Finding] = []
+
+    try:
+        findings.extend(_check_root_account(iam))
+    except ClientError as e:
+        findings.append(Finding(
+            resource_id="root",
+            resource_type="IAMRootAccount",
+            check_type="SCAN_ERROR",
+            severity=Severity.LOW,
+            description=f"Could not check root account: {e.response['Error']['Code']}",
+            detail={"error": str(e)},
+        ))
 
     for user in iam.list_users()["Users"]:
         user_name = user["UserName"]

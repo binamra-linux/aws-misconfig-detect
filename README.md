@@ -8,7 +8,7 @@ concrete remediation steps for each one. Results are shown in a Streamlit dashbo
 ## Status
 
 - ✅ S3: public read/write access, missing encryption, missing versioning
-- ✅ IAM: overly permissive policies, missing MFA, unused access keys
+- ✅ IAM: overly permissive policies, missing MFA, unused access keys, root account MFA/access keys
 - ✅ Security groups: 0.0.0.0/0 / ::/0 on ports 22/3389/3306/5432
 
 ## Project layout
@@ -80,6 +80,7 @@ dashboard/
            "iam:ListMFADevices",
            "iam:ListAccessKeys",
            "iam:GetAccessKeyLastUsed",
+           "iam:GetAccountSummary",
            "ec2:DescribeSecurityGroups"
          ],
          "Resource": "*"
@@ -152,6 +153,11 @@ python -m scripts.destroy_test_iam_user <user-name>
 Note: `IAM_UNUSED_ACCESS_KEY` won't fire on a freshly created key, since it hasn't been
 inactive for `IAM_UNUSED_KEY_DAYS` (default 90) yet. Set `IAM_UNUSED_KEY_DAYS=0` in `.env`
 temporarily to see that check trigger immediately, then reset it back to 90 for real scans.
+
+`ROOT_NO_MFA` and `ROOT_ACCESS_KEYS_PRESENT` check your account's actual root user via
+`iam:GetAccountSummary` -- there's no safe way to fabricate a test fixture for these (you
+shouldn't create root access keys just to test), so they just reflect real account state.
+If root already has MFA and no access keys, they simply won't fire, which is correct.
 
 ## Testing against a throwaway security group
 
