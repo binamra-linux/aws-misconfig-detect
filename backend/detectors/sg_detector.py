@@ -16,7 +16,7 @@ from typing import Any, Dict, List, Optional, Set
 import boto3
 from botocore.exceptions import ClientError
 
-from backend.models import Finding, Severity
+from backend.models import CheckResult, CheckStatus, Finding, Severity
 
 SENSITIVE_PORTS = {
     22: "SSH",
@@ -40,8 +40,9 @@ def _public_cidrs(permission: Dict[str, Any]) -> Set[str]:
     return cidrs
 
 
-def _exposed_ports(security_group: Dict[str, Any]) -> Dict[int, Dict[str, Any]]:
-    exposed: Dict[int, Dict[str, Any]] = {}
+def _port_exposure(security_group: Dict[str, Any]) -> Dict[int, Optional[Dict[str, Any]]]:
+    """Every sensitive port, mapped to its exposure info (or None if not exposed)."""
+    exposure: Dict[int, Optional[Dict[str, Any]]] = {port: None for port in SENSITIVE_PORTS}
 
     for permission in security_group.get("IpPermissions", []):
         public_cidrs = _public_cidrs(permission)
@@ -57,40 +58,57 @@ def _exposed_ports(security_group: Dict[str, Any]) -> Dict[int, Dict[str, Any]]:
 
         for port, service in SENSITIVE_PORTS.items():
             if _port_in_range(from_port, to_port, port):
-                entry = exposed.setdefault(port, {"service": service, "cidrs": set(), "protocol": protocol})
+                entry = exposure[port] or {"service": service, "cidrs": set(), "protocol": protocol}
                 entry["cidrs"] |= public_cidrs
+                exposure[port] = entry
 
-    return exposed
+    return exposure
 
 
-def _check_security_group(security_group: Dict[str, Any], region: str) -> List[Finding]:
+def _check_security_group(security_group: Dict[str, Any], region: str) -> List[CheckResult]:
     group_id = security_group["GroupId"]
     group_name = security_group.get("GroupName", group_id)
+    exposure = _port_exposure(security_group)
 
-    findings = []
-    for port, info in _exposed_ports(security_group).items():
-        findings.append(Finding(
-            resource_id=group_id,
-            resource_type="SecurityGroup",
-            check_type="SG_OPEN_SENSITIVE_PORT",
-            severity=Severity.CRITICAL,
-            description=(
-                f"Security group '{group_name}' ({group_id}) allows inbound {info['service']} "
-                f"(port {port}) from {', '.join(sorted(info['cidrs']))}."
-            ),
-            detail={
-                "group_name": group_name,
-                "port": port,
-                "service": info["service"],
-                "protocol": info["protocol"],
-                "public_cidrs": sorted(info["cidrs"]),
-            },
-            region=region,
-        ))
-    return findings
+    results: List[CheckResult] = []
+    for port, service in SENSITIVE_PORTS.items():
+        info = exposure[port]
+
+        if info is None:
+            results.append(CheckResult(
+                resource_id=group_id,
+                resource_type="SecurityGroup",
+                check_type="SG_OPEN_SENSITIVE_PORT",
+                status=CheckStatus.PASS,
+                description=f"Security group '{group_name}' ({group_id}) does not expose {service} (port {port}) to the public internet.",
+                detail={"group_name": group_name, "port": port, "service": service},
+                region=region,
+            ))
+        else:
+            results.append(CheckResult(
+                resource_id=group_id,
+                resource_type="SecurityGroup",
+                check_type="SG_OPEN_SENSITIVE_PORT",
+                status=CheckStatus.FAIL,
+                severity=Severity.CRITICAL,
+                description=(
+                    f"Security group '{group_name}' ({group_id}) allows inbound {info['service']} "
+                    f"(port {port}) from {', '.join(sorted(info['cidrs']))}."
+                ),
+                detail={
+                    "group_name": group_name,
+                    "port": port,
+                    "service": info["service"],
+                    "protocol": info["protocol"],
+                    "public_cidrs": sorted(info["cidrs"]),
+                },
+                region=region,
+            ))
+
+    return results
 
 
-def scan_security_groups(session: Optional[boto3.Session] = None) -> List[Finding]:
+def scan_security_groups_checks(session: Optional[boto3.Session] = None) -> List[CheckResult]:
     session = session or boto3.Session()
     ec2 = session.client("ec2")
     region = ec2.meta.region_name
@@ -98,19 +116,29 @@ def scan_security_groups(session: Optional[boto3.Session] = None) -> List[Findin
     try:
         groups = ec2.describe_security_groups()["SecurityGroups"]
     except ClientError as e:
-        return [Finding(
+        return [CheckResult(
             resource_id=region or "unknown",
             resource_type="SecurityGroup",
             check_type="SCAN_ERROR",
+            status=CheckStatus.FAIL,
             severity=Severity.LOW,
             description=f"Could not scan security groups in {region}: {e.response['Error']['Code']}",
             detail={"error": str(e)},
             region=region,
         )]
 
-    findings: List[Finding] = []
+    results: List[CheckResult] = []
     for group in groups:
-        findings.extend(_check_security_group(group, region))
+        results.extend(_check_security_group(group, region))
+    return results
+
+
+def scan_security_groups(session: Optional[boto3.Session] = None) -> List[Finding]:
+    findings: List[Finding] = []
+    for result in scan_security_groups_checks(session):
+        finding = result.to_finding()
+        if finding is not None:
+            findings.append(finding)
     return findings
 
 

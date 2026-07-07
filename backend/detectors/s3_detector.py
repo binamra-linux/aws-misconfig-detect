@@ -14,7 +14,7 @@ from typing import Dict, List, Optional
 import boto3
 from botocore.exceptions import ClientError
 
-from backend.models import Finding, Severity
+from backend.models import CheckResult, CheckStatus, Finding, Severity
 
 PUBLIC_GROUP_URIS = {
     "http://acs.amazonaws.com/groups/global/AllUsers",
@@ -32,8 +32,7 @@ def _bucket_region(s3_client, bucket_name: str) -> str:
     return location or "us-east-1"
 
 
-def _check_public_access(client, bucket: str, region: str) -> List[Finding]:
-    findings: List[Finding] = []
+def _check_public_access(client, bucket: str, region: str) -> CheckResult:
     detail: Dict = {}
     public_grants = []
 
@@ -57,72 +56,106 @@ def _check_public_access(client, bucket: str, region: str) -> List[Finding]:
     is_public_by_acl = bool(public_grants)
 
     if not (is_public_by_policy or is_public_by_acl):
-        return findings
+        return CheckResult(
+            resource_id=bucket,
+            resource_type="S3Bucket",
+            check_type="S3_PUBLIC_ACCESS",
+            status=CheckStatus.PASS,
+            description=f"S3 bucket '{bucket}' is not publicly accessible.",
+            detail=detail,
+            region=region,
+        )
 
     detail["public_grants"] = public_grants
     has_public_write = any(g["permission"] in WRITE_PERMISSIONS for g in public_grants)
 
     if has_public_write:
-        findings.append(Finding(
+        return CheckResult(
             resource_id=bucket,
             resource_type="S3Bucket",
             check_type="S3_PUBLIC_WRITE",
+            status=CheckStatus.FAIL,
             severity=Severity.CRITICAL,
             description=f"S3 bucket '{bucket}' grants public WRITE access via its ACL.",
             detail=detail,
             region=region,
-        ))
-    else:
-        findings.append(Finding(
-            resource_id=bucket,
-            resource_type="S3Bucket",
-            check_type="S3_PUBLIC_READ",
-            severity=Severity.HIGH,
-            description=f"S3 bucket '{bucket}' is publicly accessible (policy and/or ACL grants access to everyone).",
-            detail=detail,
-            region=region,
-        ))
-    return findings
+        )
+
+    return CheckResult(
+        resource_id=bucket,
+        resource_type="S3Bucket",
+        check_type="S3_PUBLIC_READ",
+        status=CheckStatus.FAIL,
+        severity=Severity.HIGH,
+        description=f"S3 bucket '{bucket}' is publicly accessible (policy and/or ACL grants access to everyone).",
+        detail=detail,
+        region=region,
+    )
 
 
-def _check_encryption(client, bucket: str, region: str) -> List[Finding]:
+def _check_encryption(client, bucket: str, region: str) -> CheckResult:
     try:
         client.get_bucket_encryption(Bucket=bucket)
-        return []
+        return CheckResult(
+            resource_id=bucket,
+            resource_type="S3Bucket",
+            check_type="S3_ENCRYPTION",
+            status=CheckStatus.PASS,
+            description=f"S3 bucket '{bucket}' has default server-side encryption configured.",
+            region=region,
+        )
     except ClientError as e:
         if e.response["Error"]["Code"] != "ServerSideEncryptionConfigurationNotFoundError":
             raise
-        return [Finding(
+        return CheckResult(
             resource_id=bucket,
             resource_type="S3Bucket",
             check_type="S3_NO_ENCRYPTION",
+            status=CheckStatus.FAIL,
             severity=Severity.MEDIUM,
             description=f"S3 bucket '{bucket}' has no default server-side encryption configured.",
             detail={"error_code": e.response["Error"]["Code"]},
             region=region,
-        )]
+        )
 
 
-def _check_versioning(client, bucket: str, region: str) -> List[Finding]:
+def _check_versioning(client, bucket: str, region: str) -> CheckResult:
     resp = client.get_bucket_versioning(Bucket=bucket)
     status = resp.get("Status")
     if status == "Enabled":
-        return []
-    return [Finding(
+        return CheckResult(
+            resource_id=bucket,
+            resource_type="S3Bucket",
+            check_type="S3_VERSIONING",
+            status=CheckStatus.PASS,
+            description=f"S3 bucket '{bucket}' has versioning enabled.",
+            detail={"versioning_status": status},
+            region=region,
+        )
+    return CheckResult(
         resource_id=bucket,
         resource_type="S3Bucket",
         check_type="S3_VERSIONING_DISABLED",
+        status=CheckStatus.FAIL,
         severity=Severity.LOW,
         description=f"S3 bucket '{bucket}' does not have versioning enabled.",
         detail={"versioning_status": status or "Disabled"},
         region=region,
-    )]
+    )
 
 
-def scan_s3(session: Optional[boto3.Session] = None) -> List[Finding]:
+def _check_bucket(client, bucket: str, region: str) -> List[CheckResult]:
+    return [
+        _check_public_access(client, bucket, region),
+        _check_encryption(client, bucket, region),
+        _check_versioning(client, bucket, region),
+    ]
+
+
+def scan_s3_checks(session: Optional[boto3.Session] = None) -> List[CheckResult]:
     session = session or boto3.Session()
     s3 = session.client("s3")
-    findings: List[Finding] = []
+    results: List[CheckResult] = []
 
     buckets = s3.list_buckets().get("Buckets", [])
     for bucket in buckets:
@@ -133,20 +166,28 @@ def scan_s3(session: Optional[boto3.Session] = None) -> List[Finding]:
         client = session.client("s3", region_name=region)
 
         try:
-            findings.extend(_check_public_access(client, name, region))
-            findings.extend(_check_encryption(client, name, region))
-            findings.extend(_check_versioning(client, name, region))
+            results.extend(_check_bucket(client, name, region))
         except ClientError as e:
-            findings.append(Finding(
+            results.append(CheckResult(
                 resource_id=name,
                 resource_type="S3Bucket",
                 check_type="SCAN_ERROR",
+                status=CheckStatus.FAIL,
                 severity=Severity.LOW,
                 description=f"Could not fully scan bucket '{name}': {e.response['Error']['Code']}",
                 detail={"error": str(e)},
                 region=region,
             ))
 
+    return results
+
+
+def scan_s3(session: Optional[boto3.Session] = None) -> List[Finding]:
+    findings: List[Finding] = []
+    for result in scan_s3_checks(session):
+        finding = result.to_finding()
+        if finding is not None:
+            findings.append(finding)
     return findings
 
 

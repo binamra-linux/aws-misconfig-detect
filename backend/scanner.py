@@ -3,10 +3,10 @@ from typing import List
 import boto3
 
 from backend import config
-from backend.detectors.iam_detector import scan_iam
-from backend.detectors.s3_detector import scan_s3
-from backend.detectors.sg_detector import scan_security_groups
-from backend.models import Finding
+from backend.detectors.iam_detector import scan_iam, scan_iam_checks
+from backend.detectors.s3_detector import scan_s3, scan_s3_checks
+from backend.detectors.sg_detector import scan_security_groups, scan_security_groups_checks
+from backend.models import CheckResult, Finding
 
 
 def build_session() -> boto3.Session:
@@ -24,6 +24,19 @@ def run_scan() -> List[Finding]:
     findings.extend(scan_security_groups(session))
 
     return findings
+
+
+def run_full_scan() -> List[CheckResult]:
+    """Like run_scan(), but includes PASS results too -- every check performed,
+    not just failures. Powers the Resources tab and any real pass-rate stats."""
+    session = build_session()
+    results: List[CheckResult] = []
+
+    results.extend(scan_s3_checks(session))
+    results.extend(scan_iam_checks(session))
+    results.extend(scan_security_groups_checks(session))
+
+    return results
 
 
 if __name__ == "__main__":

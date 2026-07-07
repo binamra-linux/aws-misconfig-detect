@@ -1,15 +1,16 @@
 """
-Read-only IAM misconfiguration checks:
+Read-only IAM misconfiguration checks (control numbers below cite CIS AWS
+Foundations Benchmark v1.5.0 consistently -- see frontend/src/lib/compliance.ts
+for the same mapping used in the dashboard's Compliance tab):
   - overly permissive policies: any reachable Allow statement granting
     Action:"*" on Resource:"*" (inline user policy, attached managed policy,
-    or inherited via inline/attached group policy)
-  - IAM users with a console password but no MFA device
-    (CIS AWS Foundations Benchmark 1.2)
+    or inherited via inline/attached group policy) (CIS 1.16)
+  - IAM users with a console password but no MFA device (CIS 1.2)
   - access keys that are Active but unused for IAM_UNUSED_KEY_DAYS+ days
     (or never used), per config.IAM_UNUSED_KEY_DAYS
-  - root account has no MFA enabled, or still has access keys
-    (CIS AWS Foundations Benchmark 1.5 / 1.13 -- the single highest-impact
-    check here, since the root user can't be restricted by any policy)
+  - root account has no MFA enabled (CIS 1.5), or still has access keys
+    (CIS 1.4) -- the single highest-impact checks here, since the root user
+    can't be restricted by any policy
 
 Required IAM permissions (read-only):
   iam:ListUsers, iam:ListUserPolicies, iam:GetUserPolicy,
@@ -27,7 +28,7 @@ import boto3
 from botocore.exceptions import ClientError
 
 from backend import config
-from backend.models import Finding, Severity
+from backend.models import CheckResult, CheckStatus, Finding, Severity
 
 
 def _as_list(value: Any) -> List[Any]:
@@ -85,48 +86,69 @@ def _overly_permissive_sources(iam, user_name: str) -> List[Dict[str, Any]]:
     return hits
 
 
-def _check_overly_permissive(iam, user_name: str) -> Optional[Finding]:
+def _check_overly_permissive(iam, user_name: str) -> CheckResult:
     hits = _overly_permissive_sources(iam, user_name)
     if not hits:
-        return None
-    return Finding(
+        return CheckResult(
+            resource_id=user_name,
+            resource_type="IAMUser",
+            check_type="IAM_OVERLY_PERMISSIVE_POLICY",
+            status=CheckStatus.PASS,
+            description=f"IAM user '{user_name}' has no reachable policy granting Action:\"*\" on Resource:\"*\".",
+        )
+    return CheckResult(
         resource_id=user_name,
         resource_type="IAMUser",
         check_type="IAM_OVERLY_PERMISSIVE_POLICY",
+        status=CheckStatus.FAIL,
         severity=Severity.CRITICAL,
         description=f"IAM user '{user_name}' has effective access to a policy granting Action:\"*\" on Resource:\"*\".",
         detail={"policies": hits},
     )
 
 
-def _check_mfa(iam, user_name: str) -> Optional[Finding]:
+def _check_mfa(iam, user_name: str) -> Optional[CheckResult]:
     try:
-        iam.get_login_profile(UserName=user_name)
+        login_profile = iam.get_login_profile(UserName=user_name)["LoginProfile"]
     except ClientError as e:
         if e.response["Error"]["Code"] == "NoSuchEntity":
-            return None  # no console password -> MFA doesn't apply
+            return None  # no console password -> MFA check doesn't apply to this user
         raise
 
-    if iam.list_mfa_devices(UserName=user_name)["MFADevices"]:
-        return None
+    password_reset_required = login_profile.get("PasswordResetRequired", False)
 
-    return Finding(
+    if iam.list_mfa_devices(UserName=user_name)["MFADevices"]:
+        return CheckResult(
+            resource_id=user_name,
+            resource_type="IAMUser",
+            check_type="IAM_NO_MFA",
+            status=CheckStatus.PASS,
+            description=f"IAM user '{user_name}' has a console password and an MFA device enabled.",
+            detail={"has_console_password": True, "password_reset_required": password_reset_required},
+        )
+
+    return CheckResult(
         resource_id=user_name,
         resource_type="IAMUser",
         check_type="IAM_NO_MFA",
+        status=CheckStatus.FAIL,
         severity=Severity.HIGH,
         description=f"IAM user '{user_name}' has a console password but no MFA device enabled.",
-        detail={},
+        detail={
+            "has_console_password": True,
+            "password_reset_required": password_reset_required,
+            "mfa_devices": [],
+        },
     )
 
 
-def _check_unused_access_keys(iam, user_name: str) -> List[Finding]:
-    findings: List[Finding] = []
+def _check_unused_access_keys(iam, user_name: str) -> List[CheckResult]:
+    results: List[CheckResult] = []
     now = datetime.now(timezone.utc)
 
     for key in iam.list_access_keys(UserName=user_name)["AccessKeyMetadata"]:
         if key["Status"] != "Active":
-            continue
+            continue  # inactive keys aren't evaluated -- they're already disabled
 
         key_id = key["AccessKeyId"]
         last_used = iam.get_access_key_last_used(AccessKeyId=key_id).get("AccessKeyLastUsed", {})
@@ -134,67 +156,103 @@ def _check_unused_access_keys(iam, user_name: str) -> List[Finding]:
         reference_date = last_used_date or key["CreateDate"]
         age_days = (now - reference_date).days
 
+        detail = {
+            "created": key["CreateDate"].isoformat(),
+            "last_used_date": last_used_date.isoformat() if last_used_date else None,
+            "service_last_used": last_used.get("ServiceName"),
+            "threshold_days": config.IAM_UNUSED_KEY_DAYS,
+        }
+
         if age_days >= config.IAM_UNUSED_KEY_DAYS:
             never_used_note = "" if last_used_date else " (never used)"
-            findings.append(Finding(
+            results.append(CheckResult(
                 resource_id=f"{user_name}/{key_id}",
                 resource_type="IAMAccessKey",
                 check_type="IAM_UNUSED_ACCESS_KEY",
+                status=CheckStatus.FAIL,
                 severity=Severity.MEDIUM,
                 description=(
                     f"Access key '{key_id}' for user '{user_name}' has been unused for "
                     f"{age_days} day(s){never_used_note}."
                 ),
-                detail={
-                    "created": key["CreateDate"].isoformat(),
-                    "last_used_date": last_used_date.isoformat() if last_used_date else None,
-                    "service_last_used": last_used.get("ServiceName"),
-                    "threshold_days": config.IAM_UNUSED_KEY_DAYS,
-                },
+                detail=detail,
+            ))
+        else:
+            results.append(CheckResult(
+                resource_id=f"{user_name}/{key_id}",
+                resource_type="IAMAccessKey",
+                check_type="IAM_UNUSED_ACCESS_KEY",
+                status=CheckStatus.PASS,
+                description=(
+                    f"Access key '{key_id}' for user '{user_name}' has been used within "
+                    f"the last {config.IAM_UNUSED_KEY_DAYS} days."
+                ),
+                detail=detail,
             ))
 
-    return findings
+    return results
 
 
-def _check_root_account(iam) -> List[Finding]:
+def _check_root_account(iam) -> List[CheckResult]:
     summary = iam.get_account_summary()["SummaryMap"]
-    findings: List[Finding] = []
+    results: List[CheckResult] = []
 
     if summary.get("AccountMFAEnabled", 0) == 0:
-        findings.append(Finding(
+        results.append(CheckResult(
             resource_id="root",
             resource_type="IAMRootAccount",
             check_type="ROOT_NO_MFA",
+            status=CheckStatus.FAIL,
             severity=Severity.CRITICAL,
             description="The AWS account root user does not have MFA enabled.",
             detail={"AccountMFAEnabled": summary.get("AccountMFAEnabled")},
         ))
+    else:
+        results.append(CheckResult(
+            resource_id="root",
+            resource_type="IAMRootAccount",
+            check_type="ROOT_NO_MFA",
+            status=CheckStatus.PASS,
+            description="The AWS account root user has MFA enabled.",
+            detail={"AccountMFAEnabled": summary.get("AccountMFAEnabled")},
+        ))
 
     if summary.get("AccountAccessKeysPresent", 0) != 0:
-        findings.append(Finding(
+        results.append(CheckResult(
             resource_id="root",
             resource_type="IAMRootAccount",
             check_type="ROOT_ACCESS_KEYS_PRESENT",
+            status=CheckStatus.FAIL,
             severity=Severity.CRITICAL,
             description="The AWS account root user has active access keys. The root user should never have access keys.",
             detail={"AccountAccessKeysPresent": summary.get("AccountAccessKeysPresent")},
         ))
+    else:
+        results.append(CheckResult(
+            resource_id="root",
+            resource_type="IAMRootAccount",
+            check_type="ROOT_ACCESS_KEYS_PRESENT",
+            status=CheckStatus.PASS,
+            description="The AWS account root user has no access keys.",
+            detail={"AccountAccessKeysPresent": summary.get("AccountAccessKeysPresent")},
+        ))
 
-    return findings
+    return results
 
 
-def scan_iam(session: Optional[boto3.Session] = None) -> List[Finding]:
+def scan_iam_checks(session: Optional[boto3.Session] = None) -> List[CheckResult]:
     session = session or boto3.Session()
     iam = session.client("iam")
-    findings: List[Finding] = []
+    results: List[CheckResult] = []
 
     try:
-        findings.extend(_check_root_account(iam))
+        results.extend(_check_root_account(iam))
     except ClientError as e:
-        findings.append(Finding(
+        results.append(CheckResult(
             resource_id="root",
             resource_type="IAMRootAccount",
             check_type="SCAN_ERROR",
+            status=CheckStatus.FAIL,
             severity=Severity.LOW,
             description=f"Could not check root account: {e.response['Error']['Code']}",
             detail={"error": str(e)},
@@ -204,26 +262,34 @@ def scan_iam(session: Optional[boto3.Session] = None) -> List[Finding]:
         user_name = user["UserName"]
 
         try:
-            permissive_finding = _check_overly_permissive(iam, user_name)
-            if permissive_finding:
-                findings.append(permissive_finding)
+            results.append(_check_overly_permissive(iam, user_name))
 
-            mfa_finding = _check_mfa(iam, user_name)
-            if mfa_finding:
-                findings.append(mfa_finding)
+            mfa_result = _check_mfa(iam, user_name)
+            if mfa_result is not None:
+                results.append(mfa_result)
 
-            findings.extend(_check_unused_access_keys(iam, user_name))
+            results.extend(_check_unused_access_keys(iam, user_name))
 
         except ClientError as e:
-            findings.append(Finding(
+            results.append(CheckResult(
                 resource_id=user_name,
                 resource_type="IAMUser",
                 check_type="SCAN_ERROR",
+                status=CheckStatus.FAIL,
                 severity=Severity.LOW,
                 description=f"Could not fully scan IAM user '{user_name}': {e.response['Error']['Code']}",
                 detail={"error": str(e)},
             ))
 
+    return results
+
+
+def scan_iam(session: Optional[boto3.Session] = None) -> List[Finding]:
+    findings: List[Finding] = []
+    for result in scan_iam_checks(session):
+        finding = result.to_finding()
+        if finding is not None:
+            findings.append(finding)
     return findings
 
 
