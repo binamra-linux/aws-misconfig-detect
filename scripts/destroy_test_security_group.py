@@ -13,6 +13,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from backend.scanner import build_session
 
 
+def destroy_security_group(session, group_id: str) -> None:
+    ec2 = session.client("ec2")
+    print(f"Deleting security group '{group_id}'...")
+    ec2.delete_security_group(GroupId=group_id)
+
+
 def main():
     if len(sys.argv) != 2:
         print("Usage: python -m scripts.destroy_test_security_group <group-id>")
@@ -32,8 +38,7 @@ def main():
             print("Aborted.")
             sys.exit(1)
 
-    print(f"Deleting security group '{group_id}'...")
-    ec2.delete_security_group(GroupId=group_id)
+    destroy_security_group(session, group_id)
     print("Done.")
 
 

@@ -29,8 +29,8 @@ OVERLY_PERMISSIVE_POLICY = {
 }
 
 
-def main():
-    session = build_session()
+def create_iam_user(session) -> str:
+    """Creates an overly permissive, MFA-less IAM user with an access key and returns its name."""
     iam = session.client("iam")
     user_name = f"awsdetect-test-{int(time.time())}"
 
@@ -50,11 +50,23 @@ def main():
 
     print("Creating an access key...")
     key = iam.create_access_key(UserName=user_name)["AccessKey"]
+    print(f"  access key {key['AccessKeyId']} created (see note below about testing IAM_UNUSED_ACCESS_KEY)")
+
+    return user_name
+
+
+def main():
+    user_name = create_iam_user(build_session())
 
     print(f"\nDone. '{user_name}' now has:")
     print("  - an overly permissive inline policy")
     print("  - a console password with no MFA")
-    print(f"  - access key {key['AccessKeyId']} (see note above about testing IAM_UNUSED_ACCESS_KEY)")
+    print("  - an access key")
+    print(
+        "\nNote: IAM_UNUSED_ACCESS_KEY won't fire on this fresh key until IAM_UNUSED_KEY_DAYS "
+        "has elapsed -- set IAM_UNUSED_KEY_DAYS=0 in .env (or the web app's Settings tab) to "
+        "test that check immediately."
+    )
     print("\nRun the detector:\n  python -m backend.detectors.iam_detector")
     print(f"\nWhen you're done testing, clean up with:\n  python -m scripts.destroy_test_iam_user {user_name}")
 

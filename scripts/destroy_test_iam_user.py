@@ -17,22 +17,7 @@ from botocore.exceptions import ClientError
 from backend.scanner import build_session
 
 
-def main():
-    if len(sys.argv) != 2:
-        print("Usage: python -m scripts.destroy_test_iam_user <user-name>")
-        sys.exit(1)
-
-    user_name = sys.argv[1]
-    if not user_name.startswith("awsdetect-test-"):
-        confirm = input(
-            f"'{user_name}' doesn't look like a test user created by this tool. "
-            f"Delete it anyway? [y/N] "
-        )
-        if confirm.strip().lower() != "y":
-            print("Aborted.")
-            sys.exit(1)
-
-    session = build_session()
+def destroy_iam_user(session, user_name: str) -> None:
     iam = session.client("iam")
 
     print(f"Removing inline policies from '{user_name}'...")
@@ -60,6 +45,24 @@ def main():
 
     print(f"Deleting user '{user_name}'...")
     iam.delete_user(UserName=user_name)
+
+
+def main():
+    if len(sys.argv) != 2:
+        print("Usage: python -m scripts.destroy_test_iam_user <user-name>")
+        sys.exit(1)
+
+    user_name = sys.argv[1]
+    if not user_name.startswith("awsdetect-test-"):
+        confirm = input(
+            f"'{user_name}' doesn't look like a test user created by this tool. "
+            f"Delete it anyway? [y/N] "
+        )
+        if confirm.strip().lower() != "y":
+            print("Aborted.")
+            sys.exit(1)
+
+    destroy_iam_user(build_session(), user_name)
     print("Done.")
 
 

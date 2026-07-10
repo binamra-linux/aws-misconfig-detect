@@ -26,8 +26,8 @@ def _default_vpc_id(ec2) -> str:
     return vpcs[0]["VpcId"]
 
 
-def main():
-    session = build_session()
+def create_security_group(session) -> str:
+    """Creates a security group with SSH open to 0.0.0.0/0 and returns its group ID."""
     ec2 = session.client("ec2")
 
     vpc_id = _default_vpc_id(ec2)
@@ -51,7 +51,13 @@ def main():
         }],
     )
 
-    print(f"\nDone. Security group '{group_id}' ({group_name}) allows public SSH.")
+    return group_id
+
+
+def main():
+    group_id = create_security_group(build_session())
+
+    print(f"\nDone. Security group '{group_id}' allows public SSH.")
     print("\nRun the detector:\n  python -m backend.detectors.sg_detector")
     print(f"\nWhen you're done testing, clean up with:\n  python -m scripts.destroy_test_security_group {group_id}")
 

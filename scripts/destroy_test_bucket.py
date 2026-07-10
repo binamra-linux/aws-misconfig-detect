@@ -15,22 +15,7 @@ from botocore.exceptions import ClientError
 from backend.scanner import build_session
 
 
-def main():
-    if len(sys.argv) != 2:
-        print("Usage: python -m scripts.destroy_test_bucket <bucket-name>")
-        sys.exit(1)
-
-    bucket_name = sys.argv[1]
-    if not bucket_name.startswith("awsdetect-test-"):
-        confirm = input(
-            f"'{bucket_name}' doesn't look like a test bucket created by this tool. "
-            f"Delete it anyway? [y/N] "
-        )
-        if confirm.strip().lower() != "y":
-            print("Aborted.")
-            sys.exit(1)
-
-    session = build_session()
+def destroy_bucket(session, bucket_name: str) -> None:
     bucket = session.resource("s3").Bucket(bucket_name)
 
     print(f"Emptying bucket '{bucket_name}'...")
@@ -46,6 +31,24 @@ def main():
 
     print(f"Deleting bucket '{bucket_name}'...")
     bucket.delete()
+
+
+def main():
+    if len(sys.argv) != 2:
+        print("Usage: python -m scripts.destroy_test_bucket <bucket-name>")
+        sys.exit(1)
+
+    bucket_name = sys.argv[1]
+    if not bucket_name.startswith("awsdetect-test-"):
+        confirm = input(
+            f"'{bucket_name}' doesn't look like a test bucket created by this tool. "
+            f"Delete it anyway? [y/N] "
+        )
+        if confirm.strip().lower() != "y":
+            print("Aborted.")
+            sys.exit(1)
+
+    destroy_bucket(build_session(), bucket_name)
     print("Done.")
 
 

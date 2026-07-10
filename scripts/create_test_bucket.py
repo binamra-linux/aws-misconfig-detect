@@ -32,8 +32,8 @@ PUBLIC_READ_POLICY = """{{
 }}"""
 
 
-def main():
-    session = build_session()
+def create_bucket(session) -> str:
+    """Creates a public, unversioned test bucket and returns its name."""
     s3 = session.client("s3")
     region = config.AWS_REGION
     bucket_name = f"awsdetect-test-{int(time.time())}"
@@ -60,6 +60,12 @@ def main():
 
     print("Attaching a public-read bucket policy...")
     s3.put_bucket_policy(Bucket=bucket_name, Policy=PUBLIC_READ_POLICY.format(bucket=bucket_name))
+
+    return bucket_name
+
+
+def main():
+    bucket_name = create_bucket(build_session())
 
     print(f"\nDone. '{bucket_name}' is now public with versioning disabled.")
     print(
