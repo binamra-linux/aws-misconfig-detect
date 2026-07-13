@@ -1,6 +1,8 @@
+import { BadgeCheck } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Skeleton } from "@/components/ui/skeleton"
 import { SeverityBadge } from "@/components/SeverityBadge"
+import { EmptyState } from "@/components/EmptyState"
 import { CIS_BENCHMARK_VERSION, getComplianceControl } from "@/lib/compliance"
 import type { Finding, FindingsResponse } from "@/lib/api"
 
@@ -12,7 +14,17 @@ export function Compliance({ data, isLoading }: { data?: FindingsResponse; isLoa
   const findings = data?.findings ?? []
 
   if (findings.length === 0) {
-    return <p className="text-muted-foreground">No findings yet. Run a scan from the sidebar.</p>
+    return (
+      <EmptyState
+        icon={<BadgeCheck className="size-6" />}
+        title={data?.scanned_at ? "No issues found" : "No findings yet"}
+        description={
+          data?.scanned_at
+            ? "Your last scan didn't turn up any misconfigurations to map against CIS controls."
+            : "Run a scan from the sidebar to see your findings grouped by CIS control."
+        }
+      />
+    )
   }
 
   const groups = new Map<string, { title: string; findings: Finding[] }>()

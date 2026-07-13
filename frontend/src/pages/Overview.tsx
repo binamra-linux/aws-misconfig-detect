@@ -1,9 +1,12 @@
 import type { ReactNode } from "react"
-import { Boxes, ChartPie, ListChecks, ShieldCheck } from "lucide-react"
+import { Boxes, ChartPie, Info, ListChecks, ShieldCheck } from "lucide-react"
 import { Cell, Pie, PieChart, ResponsiveContainer } from "recharts"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Skeleton } from "@/components/ui/skeleton"
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { SeverityBadge } from "@/components/SeverityBadge"
+import { EmptyState } from "@/components/EmptyState"
+import { Welcome } from "@/components/Welcome"
 import { getScoreColor } from "@/lib/score"
 import type { FindingsResponse, Severity } from "@/lib/api"
 
@@ -28,10 +31,14 @@ export function Overview({
   data,
   isLoading,
   onGoToFindings,
+  onScan,
+  scanning,
 }: {
   data?: FindingsResponse
   isLoading: boolean
   onGoToFindings: () => void
+  onScan: () => void
+  scanning: boolean
 }) {
   if (isLoading) {
     return (
@@ -47,14 +54,17 @@ export function Overview({
   const findings = data?.findings ?? []
   const total = findings.length
 
+  if (!data?.scanned_at) {
+    return <Welcome onScan={onScan} scanning={scanning} />
+  }
+
   if (total === 0) {
     return (
-      <Card>
-        <CardContent className="pt-6 text-muted-foreground">
-          No findings yet. Click <span className="font-medium text-foreground">Run Scan</span> in the
-          sidebar to scan your AWS account.
-        </CardContent>
-      </Card>
+      <EmptyState
+        icon={<ShieldCheck className="size-6" />}
+        title="No issues found"
+        description="Your last scan didn't turn up any misconfigurations. Nice work — run another scan any time to re-check."
+      />
     )
   }
 
@@ -99,6 +109,15 @@ export function Overview({
                 <ShieldCheck className="size-4" />
               </CardIcon>
               Security Score
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Info className="size-3.5 shrink-0 cursor-help text-muted-foreground" />
+                </TooltipTrigger>
+                <TooltipContent side="bottom" className="max-w-xs text-pretty">
+                  Heuristic, not a literal pass rate: starts at 100 and deducts points per
+                  finding (Critical −25, High −15, Medium −8, Low −3), floored at 0.
+                </TooltipContent>
+              </Tooltip>
             </CardTitle>
           </CardHeader>
           <CardContent className="flex items-center gap-4">

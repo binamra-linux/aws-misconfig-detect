@@ -13,7 +13,7 @@ export function generateReportPdf(data: FindingsResponse, explanations: Record<n
 
   doc.setFontSize(18)
   doc.setFont("helvetica", "bold")
-  doc.text("AWS Misconfiguration Detector", margin, 20)
+  doc.text("CloudSentinel", margin, 20)
 
   doc.setFontSize(11)
   doc.setFont("helvetica", "normal")
@@ -80,5 +80,5 @@ export function generateReportPdf(data: FindingsResponse, explanations: Record<n
     })
   }
 
-  doc.save(`aws-misconfig-report-${new Date().toISOString().slice(0, 10)}.pdf`)
+  doc.save(`cloudsentinel-report-${new Date().toISOString().slice(0, 10)}.pdf`)
 }

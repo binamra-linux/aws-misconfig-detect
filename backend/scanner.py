@@ -3,7 +3,10 @@ from typing import List
 import boto3
 
 from backend import config
+from backend.detectors.cloudtrail_detector import scan_cloudtrail, scan_cloudtrail_checks
+from backend.detectors.ebs_detector import scan_ebs, scan_ebs_checks
 from backend.detectors.iam_detector import scan_iam, scan_iam_checks
+from backend.detectors.rds_detector import scan_rds, scan_rds_checks
 from backend.detectors.s3_detector import scan_s3, scan_s3_checks
 from backend.detectors.sg_detector import scan_security_groups, scan_security_groups_checks
 from backend.models import CheckResult, Finding
@@ -22,6 +25,9 @@ def run_scan() -> List[Finding]:
     findings.extend(scan_s3(session))
     findings.extend(scan_iam(session))
     findings.extend(scan_security_groups(session))
+    findings.extend(scan_ebs(session))
+    findings.extend(scan_rds(session))
+    findings.extend(scan_cloudtrail(session))
 
     return findings
 
@@ -35,6 +41,9 @@ def run_full_scan() -> List[CheckResult]:
     results.extend(scan_s3_checks(session))
     results.extend(scan_iam_checks(session))
     results.extend(scan_security_groups_checks(session))
+    results.extend(scan_ebs_checks(session))
+    results.extend(scan_rds_checks(session))
+    results.extend(scan_cloudtrail_checks(session))
 
     return results
 

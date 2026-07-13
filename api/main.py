@@ -7,6 +7,7 @@ small local JSON file via backend.history): this is a single-user local tool,
 not a multi-tenant service.
 """
 
+import json
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
@@ -14,18 +15,36 @@ from typing import List, Optional
 
 from botocore.exceptions import ClientError, NoCredentialsError, ProfileNotFound
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from backend import config, history
 from backend.ai.groq_client import explain_finding
+from backend.detectors.cloudtrail_detector import scan_cloudtrail_checks
+from backend.detectors.ebs_detector import scan_ebs_checks
+from backend.detectors.iam_detector import scan_iam_checks
+from backend.detectors.rds_detector import scan_rds_checks
+from backend.detectors.s3_detector import scan_s3_checks
+from backend.detectors.sg_detector import scan_security_groups_checks
 from backend.models import CheckResult, Finding, Severity
-from backend.scanner import run_full_scan
+from backend.scanner import build_session, run_full_scan
 from backend.scoring import compute_security_score
 
-app = FastAPI(title="AWS Misconfiguration Detector API")
+app = FastAPI(title="CloudSentinel API")
 
 SEVERITY_ORDER = [Severity.CRITICAL, Severity.HIGH, Severity.MEDIUM, Severity.LOW]
+
+# Order and stage keys here must stay in sync with frontend/src/components/Sidebar.tsx's
+# SCAN_STAGES array, which drives the progress bar segments.
+STAGES = [
+    ("s3", "Scanning S3 buckets...", scan_s3_checks),
+    ("iam", "Scanning IAM...", scan_iam_checks),
+    ("sg", "Scanning security groups...", scan_security_groups_checks),
+    ("ebs", "Scanning EBS volumes & snapshots...", scan_ebs_checks),
+    ("rds", "Scanning RDS instances & snapshots...", scan_rds_checks),
+    ("cloudtrail", "Checking CloudTrail...", scan_cloudtrail_checks),
+]
 
 _lock = threading.Lock()
 _current_checks: List[CheckResult] = []
@@ -48,22 +67,10 @@ def _findings_response() -> dict:
     }
 
 
-@app.post("/api/scan")
-def scan() -> dict:
-    global _current_checks, _current_findings, _scan_id, _scan_in_progress, _scanned_at
-
-    with _lock:
-        if _scan_in_progress:
-            raise HTTPException(status_code=409, detail="A scan is already in progress.")
-        _scan_in_progress = True
-
-    try:
-        checks = run_full_scan()
-    except (ClientError, NoCredentialsError, ProfileNotFound) as e:
-        raise HTTPException(status_code=502, detail=f"AWS scan failed: {e}")
-    finally:
-        with _lock:
-            _scan_in_progress = False
+def _finalize_scan(checks: List[CheckResult]) -> dict:
+    """Records a completed scan's CheckResults as the new current state, appends
+    it to history, and returns the same JSON shape as _findings_response()."""
+    global _current_checks, _current_findings, _scan_id, _scanned_at
 
     findings = []
     for r in checks:
@@ -89,7 +96,66 @@ def scan() -> dict:
             "label": score["label"],
         })
 
-    return _findings_response()
+        return _findings_response()
+
+
+@app.post("/api/scan")
+def scan() -> dict:
+    global _scan_in_progress
+
+    with _lock:
+        if _scan_in_progress:
+            raise HTTPException(status_code=409, detail="A scan is already in progress.")
+        _scan_in_progress = True
+
+    try:
+        checks = run_full_scan()
+    except (ClientError, NoCredentialsError, ProfileNotFound) as e:
+        raise HTTPException(status_code=502, detail=f"AWS scan failed: {e}")
+    finally:
+        with _lock:
+            _scan_in_progress = False
+
+    return _finalize_scan(checks)
+
+
+@app.get("/api/scan/stream")
+def scan_stream() -> StreamingResponse:
+    global _scan_in_progress
+
+    with _lock:
+        if _scan_in_progress:
+            raise HTTPException(status_code=409, detail="A scan is already in progress.")
+        _scan_in_progress = True
+
+    def event(event_name: str, data: dict) -> str:
+        return f"event: {event_name}\ndata: {json.dumps(data)}\n\n"
+
+    def generate():
+        global _scan_in_progress
+        try:
+            session = build_session()
+            checks: List[CheckResult] = []
+            for stage, label, scan_fn in STAGES:
+                checks.extend(scan_fn(session))
+                yield event("progress", {"stage": stage, "label": label, "done": True})
+
+            result = _finalize_scan(checks)
+            yield event("complete", result)
+        except (ClientError, NoCredentialsError, ProfileNotFound) as e:
+            # Named "scan_error", not "error" -- EventSource reserves the "error"
+            # event type for connection failures, so a same-named server event
+            # would be indistinguishable from a dropped connection on the client.
+            yield event("scan_error", {"detail": f"AWS scan failed: {e}"})
+        finally:
+            with _lock:
+                _scan_in_progress = False
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"},
+    )
 
 
 @app.get("/api/findings")

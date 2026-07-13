@@ -10,7 +10,7 @@ import streamlit as st
 from backend.ai.groq_client import explain_finding
 from backend.scanner import run_scan
 
-st.set_page_config(page_title="AWS Misconfiguration Detector", layout="wide")
+st.set_page_config(page_title="CloudSentinel", layout="wide")
 
 SEVERITY_ORDER = ["CRITICAL", "HIGH", "MEDIUM", "LOW"]
 SEVERITY_COLOR = {
@@ -20,7 +20,7 @@ SEVERITY_COLOR = {
     "LOW": "#5BC0DE",
 }
 
-st.title("AWS Cloud Misconfiguration Detector")
+st.title("CloudSentinel")
 st.caption("Read-only scan of your AWS account, with AI-generated risk explanations and remediation steps.")
 
 if "findings" not in st.session_state:

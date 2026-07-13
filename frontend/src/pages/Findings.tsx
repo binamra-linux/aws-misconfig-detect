@@ -1,6 +1,6 @@
 import { Fragment, useMemo, useState } from "react"
 import { useMutation } from "@tanstack/react-query"
-import { ChevronRight, Download } from "lucide-react"
+import { ChevronRight, Download, ShieldCheck } from "lucide-react"
 import ReactMarkdown from "react-markdown"
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
@@ -9,6 +9,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Skeleton } from "@/components/ui/skeleton"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { SeverityBadge } from "@/components/SeverityBadge"
+import { EmptyState } from "@/components/EmptyState"
 import { cn } from "@/lib/utils"
 import { explainFinding } from "@/lib/api"
 import { generateReportPdf } from "@/lib/report"
@@ -53,7 +54,17 @@ export function Findings({ data, isLoading }: { data?: FindingsResponse; isLoadi
   }
 
   if (findings.length === 0) {
-    return <p className="text-muted-foreground">No findings yet. Run a scan from the sidebar.</p>
+    return (
+      <EmptyState
+        icon={<ShieldCheck className="size-6" />}
+        title={data?.scanned_at ? "No issues found" : "No findings yet"}
+        description={
+          data?.scanned_at
+            ? "Your last scan didn't turn up any misconfigurations."
+            : "Run a scan from the sidebar to check your AWS account."
+        }
+      />
+    )
   }
 
   return (

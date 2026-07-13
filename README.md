@@ -1,4 +1,4 @@
-# aws-misconfig-detect
+# CloudSentinel
 
 AI-assisted AWS cloud misconfiguration detection and remediation tool, built for
 resource-constrained IT startups. Scans a live AWS account read-only, structures
@@ -16,6 +16,9 @@ Two front ends share the same detection backend:
 - ✅ S3: public read/write access, missing encryption, missing versioning
 - ✅ IAM: overly permissive policies, missing MFA, unused access keys, root account MFA/access keys
 - ✅ Security groups: 0.0.0.0/0 / ::/0 on ports 22/3389/3306/5432
+- ✅ EBS: unencrypted volumes, publicly shared snapshots
+- ✅ RDS: publicly accessible instances, missing storage encryption, publicly shared manual snapshots
+- ✅ CloudTrail: no multi-region trail actively logging, log file validation disabled
 
 Every check records **both** a pass and a fail outcome internally (see "CheckResult
 vs Finding" below), which is what powers the Resources tab, the Compliance tab, and
@@ -34,6 +37,9 @@ backend/
     s3_detector.py         # implemented
     iam_detector.py        # implemented
     sg_detector.py         # implemented
+    ebs_detector.py        # implemented
+    rds_detector.py        # implemented
+    cloudtrail_detector.py # implemented
   ai/
     groq_client.py         # Groq (OpenAI-compatible) explanation generator
 api/
@@ -69,7 +75,7 @@ data/
    - **Groq**: get an API key from https://console.groq.com and set `GROQ_API_KEY`.
 
 3. Create a read-only IAM user/role for scanning. Minimum policy for the current
-   (S3 + IAM + security groups) scope:
+   (S3 + IAM + security groups + EBS + RDS + CloudTrail) scope:
 
    ```json
    {
@@ -99,7 +105,15 @@ data/
            "iam:ListAccessKeys",
            "iam:GetAccessKeyLastUsed",
            "iam:GetAccountSummary",
-           "ec2:DescribeSecurityGroups"
+           "ec2:DescribeSecurityGroups",
+           "ec2:DescribeVolumes",
+           "ec2:DescribeSnapshots",
+           "ec2:DescribeSnapshotAttribute",
+           "rds:DescribeDBInstances",
+           "rds:DescribeDBSnapshots",
+           "rds:DescribeDBSnapshotAttributes",
+           "cloudtrail:DescribeTrails",
+           "cloudtrail:GetTrailStatus"
          ],
          "Resource": "*"
        }
@@ -217,6 +231,36 @@ confident, dedicated control (S3 checks, and the MySQL/PostgreSQL ports in
 `SG_OPEN_SENSITIVE_PORT` — only 22/3389 are explicitly named in the benchmark)
 are labeled "N/A" rather than given a fabricated number. Verify against the
 official benchmark document before citing any of this formally.
+
+## Testing against all three at once (recommended)
+
+`scripts/create_all_test_vulnerabilities.py` creates the S3 bucket, IAM user, and
+security group described in the three sections below all in one step, and writes
+their identifiers to `scripts/.test_fixtures.json` (gitignored) so you don't have to
+copy-paste bucket names/IDs to clean up afterwards.
+
+This needs the union of all three sections' temporary write permissions at once — see
+below for the exact actions, or just attach `AmazonS3FullAccess` + `IAMFullAccess` +
+`AmazonEC2FullAccess` temporarily if you want the simplest (broadest) path. **Remove
+whatever you attach again once you're done testing.**
+
+```bash
+python -m scripts.create_all_test_vulnerabilities
+# creates a public S3 bucket, an overly-permissive MFA-less IAM user, and a
+# security group with SSH open to 0.0.0.0/0
+
+python -m backend.scanner
+# should show 6 findings: S3_PUBLIC_READ, S3_VERSIONING_DISABLED,
+# IAM_OVERLY_PERMISSIVE_POLICY, IAM_NO_MFA (x2 -- the test user and your real
+# account if it also lacks MFA), SG_OPEN_SENSITIVE_PORT
+
+# when done:
+python -m scripts.destroy_all_test_vulnerabilities
+```
+
+Use the individual `create_test_bucket.py` / `create_test_iam_user.py` /
+`create_test_security_group.py` scripts below instead if you only want to exercise
+one detector at a time.
 
 ## Testing against a throwaway bucket
 

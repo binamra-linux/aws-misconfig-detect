@@ -39,6 +39,14 @@ const CIS_MAP: Record<string, ComplianceControl> = {
     control: "1.4",
     title: "Ensure no 'root' user account access key exists",
   },
+  CLOUDTRAIL_NOT_ENABLED: {
+    control: "3.1",
+    title: "Ensure CloudTrail is enabled in all regions",
+  },
+  CLOUDTRAIL_LOG_VALIDATION_DISABLED: {
+    control: "3.2",
+    title: "Ensure CloudTrail log file validation is enabled",
+  },
 }
 
 const SG_PORT_MAP: Record<number, ComplianceControl> = {

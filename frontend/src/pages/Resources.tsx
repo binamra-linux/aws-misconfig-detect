@@ -1,11 +1,13 @@
 import { useMemo, useState } from "react"
 import { useQuery } from "@tanstack/react-query"
+import { Boxes } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Input } from "@/components/ui/input"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { SeverityBadge } from "@/components/SeverityBadge"
+import { EmptyState } from "@/components/EmptyState"
 import { getResources } from "@/lib/api"
 
 export function Resources() {
@@ -33,7 +35,13 @@ export function Resources() {
   }
 
   if (checks.length === 0) {
-    return <p className="text-muted-foreground">No resources scanned yet. Run a scan from the sidebar.</p>
+    return (
+      <EmptyState
+        icon={<Boxes className="size-6" />}
+        title="No resources scanned yet"
+        description="Run a scan from the sidebar to see every check performed across your AWS account."
+      />
+    )
   }
 
   const passCount = checks.filter((c) => c.status === "PASS").length

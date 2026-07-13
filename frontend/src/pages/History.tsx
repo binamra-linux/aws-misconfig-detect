@@ -1,8 +1,10 @@
 import { useQuery } from "@tanstack/react-query"
+import { History as HistoryIcon } from "lucide-react"
 import { CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
+import { EmptyState } from "@/components/EmptyState"
 import { getHistory } from "@/lib/api"
 
 const TOOLTIP_STYLE = {
@@ -24,9 +26,11 @@ export function History() {
 
   if (scans.length === 0) {
     return (
-      <p className="text-muted-foreground">
-        No scan history yet. Run a scan from the sidebar to start tracking trends.
-      </p>
+      <EmptyState
+        icon={<HistoryIcon className="size-6" />}
+        title="No scan history yet"
+        description="Run a scan from the sidebar to start tracking your security score and finding counts over time."
+      />
     )
   }
 
