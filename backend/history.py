@@ -40,3 +40,8 @@ def append_scan(record: Dict[str, Any]) -> None:
         records = _read_all()
         records.append(record)
         _write_all(records)
+
+
+def clear_history() -> None:
+    with _lock:
+        _write_all([])

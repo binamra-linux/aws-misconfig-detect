@@ -4,3 +4,11 @@ streamlit>=1.32
 openai>=1.30
 fastapi>=0.110
 uvicorn[standard]>=0.29
+
+# Signs the session cookie for Starlette's SessionMiddleware. This is a Starlette
+# *optional* extra, not a guaranteed transitive dep -- pin it or a clean install
+# (e.g. the Docker image) will fail at import.
+itsdangerous>=2.2
+
+# Scheduled scans. Stay on the 3.x line -- 4.x is still pre-release.
+apscheduler>=3.11,<4

@@ -1,12 +1,14 @@
 """
 Read-only S3 misconfiguration checks:
+  - account-level Block Public Access not fully enabled
   - public read / write access (bucket ACL + bucket policy status)
   - missing default encryption
   - missing versioning
 
 Required IAM permissions (read-only):
   s3:ListAllMyBuckets, s3:GetBucketLocation, s3:GetBucketAcl,
-  s3:GetBucketPolicyStatus, s3:GetEncryptionConfiguration, s3:GetBucketVersioning
+  s3:GetBucketPolicyStatus, s3:GetEncryptionConfiguration, s3:GetBucketVersioning,
+  s3:GetAccountPublicAccessBlock, sts:GetCallerIdentity
 """
 
 from typing import Dict, List, Optional
@@ -42,6 +44,10 @@ def _check_public_access(client, bucket: str, region: str) -> CheckResult:
     except ClientError as e:
         if e.response["Error"]["Code"] != "NoSuchBucketPolicy":
             detail["policy_status_error"] = e.response["Error"]["Code"]
+    except (KeyError, TypeError) as e:
+        # An unexpected response shape must not abort the whole scan -- record it
+        # and fall back to the ACL check below, which is an independent signal.
+        detail["policy_status_error"] = f"unexpected response shape: {e}"
 
     try:
         acl = client.get_bucket_acl(Bucket=bucket)
@@ -152,10 +158,80 @@ def _check_bucket(client, bucket: str, region: str) -> List[CheckResult]:
     ]
 
 
+# The four account-level Block Public Access switches. All four on is the only
+# configuration that actually guarantees no bucket can be made public.
+BPA_SETTINGS = [
+    "BlockPublicAcls",
+    "IgnorePublicAcls",
+    "BlockPublicPolicy",
+    "RestrictPublicBuckets",
+]
+
+
+def _check_account_public_access_block(session: boto3.Session) -> CheckResult:
+    """Account-wide Block Public Access -- the backstop that prevents *any* bucket
+    from being exposed, regardless of its individual ACL/policy."""
+    account_id = session.client("sts").get_caller_identity()["Account"]
+    s3control = session.client("s3control")
+
+    try:
+        config_block = s3control.get_public_access_block(AccountId=account_id)["PublicAccessBlockConfiguration"]
+    except ClientError as e:
+        if e.response["Error"]["Code"] != "NoSuchPublicAccessBlockConfiguration":
+            raise
+        return CheckResult(
+            resource_id=account_id,
+            resource_type="S3Account",
+            check_type="S3_ACCOUNT_BPA_DISABLED",
+            status=CheckStatus.FAIL,
+            severity=Severity.HIGH,
+            description="Account-level S3 Block Public Access is not configured, so any bucket can be made public.",
+            detail={"public_access_block": None},
+        )
+
+    disabled = [s for s in BPA_SETTINGS if not config_block.get(s)]
+
+    if not disabled:
+        return CheckResult(
+            resource_id=account_id,
+            resource_type="S3Account",
+            check_type="S3_ACCOUNT_BPA_DISABLED",
+            status=CheckStatus.PASS,
+            description="Account-level S3 Block Public Access is fully enabled.",
+            detail={"public_access_block": config_block},
+        )
+
+    return CheckResult(
+        resource_id=account_id,
+        resource_type="S3Account",
+        check_type="S3_ACCOUNT_BPA_DISABLED",
+        status=CheckStatus.FAIL,
+        severity=Severity.HIGH,
+        description=(
+            "Account-level S3 Block Public Access is incomplete: "
+            f"{', '.join(disabled)} not enabled."
+        ),
+        detail={"public_access_block": config_block, "disabled": disabled},
+    )
+
+
 def scan_s3_checks(session: Optional[boto3.Session] = None) -> List[CheckResult]:
     session = session or boto3.Session()
     s3 = session.client("s3")
     results: List[CheckResult] = []
+
+    try:
+        results.append(_check_account_public_access_block(session))
+    except ClientError as e:
+        results.append(CheckResult(
+            resource_id="account",
+            resource_type="S3Account",
+            check_type="SCAN_ERROR",
+            status=CheckStatus.FAIL,
+            severity=Severity.LOW,
+            description=f"Could not check account-level Block Public Access: {e.response['Error']['Code']}",
+            detail={"error": str(e)},
+        ))
 
     buckets = s3.list_buckets().get("Buckets", [])
     for bucket in buckets:

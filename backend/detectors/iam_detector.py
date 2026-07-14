@@ -11,6 +11,7 @@ for the same mapping used in the dashboard's Compliance tab):
   - root account has no MFA enabled (CIS 1.5), or still has access keys
     (CIS 1.4) -- the single highest-impact checks here, since the root user
     can't be restricted by any policy
+  - weak or missing account password policy (CIS 1.8-1.11)
 
 Required IAM permissions (read-only):
   iam:ListUsers, iam:ListUserPolicies, iam:GetUserPolicy,
@@ -18,7 +19,7 @@ Required IAM permissions (read-only):
   iam:ListGroupPolicies, iam:GetGroupPolicy, iam:ListAttachedGroupPolicies,
   iam:GetPolicy, iam:GetPolicyVersion, iam:GetLoginProfile,
   iam:ListMFADevices, iam:ListAccessKeys, iam:GetAccessKeyLastUsed,
-  iam:GetAccountSummary
+  iam:GetAccountSummary, iam:GetAccountPasswordPolicy
 """
 
 from datetime import datetime, timezone
@@ -240,6 +241,70 @@ def _check_root_account(iam) -> List[CheckResult]:
     return results
 
 
+MIN_PASSWORD_LENGTH = 14
+
+# CIS 1.8-1.11: minimum length plus each character-class requirement.
+PASSWORD_POLICY_REQUIREMENTS = [
+    ("RequireUppercaseCharacters", "uppercase letters"),
+    ("RequireLowercaseCharacters", "lowercase letters"),
+    ("RequireNumbers", "numbers"),
+    ("RequireSymbols", "symbols"),
+]
+
+
+def _check_password_policy(iam) -> CheckResult:
+    """CIS 1.8-1.11 -- account password policy strength."""
+    try:
+        policy = iam.get_account_password_policy()["PasswordPolicy"]
+    except ClientError as e:
+        if e.response["Error"]["Code"] != "NoSuchEntity":
+            raise
+        # No policy at all means AWS defaults apply, which are weaker than CIS
+        # requires -- that's a finding in itself, not a scan error.
+        return CheckResult(
+            resource_id="account",
+            resource_type="IAMPasswordPolicy",
+            check_type="IAM_WEAK_PASSWORD_POLICY",
+            status=CheckStatus.FAIL,
+            severity=Severity.HIGH,
+            description="The account has no IAM password policy set, so AWS's weak defaults apply.",
+            detail={"policy": None},
+        )
+
+    weaknesses = []
+
+    min_length = policy.get("MinimumPasswordLength", 0)
+    if min_length < MIN_PASSWORD_LENGTH:
+        weaknesses.append(f"minimum length is {min_length} (should be at least {MIN_PASSWORD_LENGTH})")
+
+    for key, label in PASSWORD_POLICY_REQUIREMENTS:
+        if not policy.get(key):
+            weaknesses.append(f"does not require {label}")
+
+    if not weaknesses:
+        return CheckResult(
+            resource_id="account",
+            resource_type="IAMPasswordPolicy",
+            check_type="IAM_WEAK_PASSWORD_POLICY",
+            status=CheckStatus.PASS,
+            description=(
+                f"The IAM password policy requires at least {min_length} characters "
+                "and all four character classes."
+            ),
+            detail={"policy": policy},
+        )
+
+    return CheckResult(
+        resource_id="account",
+        resource_type="IAMPasswordPolicy",
+        check_type="IAM_WEAK_PASSWORD_POLICY",
+        status=CheckStatus.FAIL,
+        severity=Severity.MEDIUM,
+        description=f"The IAM password policy is weak: {'; '.join(weaknesses)}.",
+        detail={"policy": policy, "weaknesses": weaknesses},
+    )
+
+
 def scan_iam_checks(session: Optional[boto3.Session] = None) -> List[CheckResult]:
     session = session or boto3.Session()
     iam = session.client("iam")
@@ -255,6 +320,19 @@ def scan_iam_checks(session: Optional[boto3.Session] = None) -> List[CheckResult
             status=CheckStatus.FAIL,
             severity=Severity.LOW,
             description=f"Could not check root account: {e.response['Error']['Code']}",
+            detail={"error": str(e)},
+        ))
+
+    try:
+        results.append(_check_password_policy(iam))
+    except ClientError as e:
+        results.append(CheckResult(
+            resource_id="account",
+            resource_type="IAMPasswordPolicy",
+            check_type="SCAN_ERROR",
+            status=CheckStatus.FAIL,
+            severity=Severity.LOW,
+            description=f"Could not check the password policy: {e.response['Error']['Code']}",
             detail={"error": str(e)},
         ))
 

@@ -54,15 +54,45 @@ export interface HistoryResponse {
   scans: HistoryRecord[]
 }
 
+export interface ScheduleInfo {
+  enabled: boolean
+  cron: string | null
+  next_run: string | null
+  alerts_configured: boolean
+  alert_recipients: string[]
+}
+
 export interface ConfigInfo {
   aws_region: string
+  aws_regions: string
   aws_profile: string
   groq_model: string
   iam_unused_key_days: number
+  remediation_enabled: boolean
+  schedule: ScheduleInfo
 }
 
 export interface ExplanationResponse {
   explanation: string
+}
+
+export interface AuthStatus {
+  needs_setup: boolean
+  user: string | null
+}
+
+export interface RemediationInfo {
+  available: boolean
+  enabled: boolean
+  description: string | null
+}
+
+/** Thrown on a 401 so callers can distinguish "logged out" from any other failure. */
+export class UnauthorizedError extends Error {
+  constructor(message = "Not authenticated.") {
+    super(message)
+    this.name = "UnauthorizedError"
+  }
 }
 
 async function request<T>(url: string, options?: RequestInit): Promise<T> {
@@ -75,13 +105,53 @@ async function request<T>(url: string, options?: RequestInit): Promise<T> {
     } catch {
       // response body wasn't JSON -- fall back to statusText
     }
+    if (res.status === 401) throw new UnauthorizedError(message)
     throw new Error(message)
   }
   return res.json()
 }
 
+function post<T>(url: string, body?: unknown): Promise<T> {
+  return request<T>(url, {
+    method: "POST",
+    headers: body ? { "Content-Type": "application/json" } : undefined,
+    body: body ? JSON.stringify(body) : undefined,
+  })
+}
+
+export function getAuthStatus(): Promise<AuthStatus> {
+  return request<AuthStatus>("/api/auth/status")
+}
+
+export function login(username: string, password: string): Promise<{ user: string }> {
+  return post<{ user: string }>("/api/auth/login", { username, password })
+}
+
+export function registerUser(username: string, password: string): Promise<{ user: string }> {
+  return post<{ user: string }>("/api/auth/register", { username, password })
+}
+
+export function logout(): Promise<{ ok: boolean }> {
+  return post<{ ok: boolean }>("/api/auth/logout")
+}
+
 export function runScan(): Promise<FindingsResponse> {
   return request<FindingsResponse>("/api/scan", { method: "POST" })
+}
+
+export function resetApp(): Promise<FindingsResponse> {
+  return request<FindingsResponse>("/api/reset", { method: "POST" })
+}
+
+export function getRemediationInfo(scanId: number, findingId: number): Promise<RemediationInfo> {
+  return request<RemediationInfo>(`/api/findings/${scanId}/${findingId}/remediation`)
+}
+
+export function remediateFinding(
+  scanId: number,
+  findingId: number,
+): Promise<{ ok: boolean; message: string }> {
+  return post<{ ok: boolean; message: string }>(`/api/findings/${scanId}/${findingId}/remediate`)
 }
 
 export function getFindings(): Promise<FindingsResponse> {

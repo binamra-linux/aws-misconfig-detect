@@ -2,6 +2,7 @@
 Read-only security group misconfiguration checks:
   - inbound rules open to 0.0.0.0/0 or ::/0 on sensitive ports:
     22 (SSH), 3389 (RDP), 3306 (MySQL), 5432 (PostgreSQL)
+  - the VPC's default security group still carrying rules (CIS 5.4)
 
 Only scans the single region the session is configured for (AWS_REGION) --
 security groups are region-scoped, so multi-region accounts should re-run
@@ -108,6 +109,40 @@ def _check_security_group(security_group: Dict[str, Any], region: str) -> List[C
     return results
 
 
+def _check_default_security_group(security_group: Dict[str, Any], region: str) -> CheckResult:
+    """CIS 5.4 -- every VPC's auto-created 'default' security group should carry no
+    rules at all, so that anything accidentally launched into it is fully isolated."""
+    group_id = security_group["GroupId"]
+    vpc_id = security_group.get("VpcId")
+    ingress = security_group.get("IpPermissions", [])
+    egress = security_group.get("IpPermissionsEgress", [])
+
+    if not ingress and not egress:
+        return CheckResult(
+            resource_id=group_id,
+            resource_type="SecurityGroup",
+            check_type="SG_DEFAULT_ALLOWS_TRAFFIC",
+            status=CheckStatus.PASS,
+            description=f"The default security group for VPC '{vpc_id}' allows no traffic.",
+            detail={"vpc_id": vpc_id},
+            region=region,
+        )
+
+    return CheckResult(
+        resource_id=group_id,
+        resource_type="SecurityGroup",
+        check_type="SG_DEFAULT_ALLOWS_TRAFFIC",
+        status=CheckStatus.FAIL,
+        severity=Severity.MEDIUM,
+        description=(
+            f"The default security group for VPC '{vpc_id}' still has rules "
+            f"({len(ingress)} inbound, {len(egress)} outbound). It should allow no traffic."
+        ),
+        detail={"vpc_id": vpc_id, "inbound_rules": len(ingress), "outbound_rules": len(egress)},
+        region=region,
+    )
+
+
 def scan_security_groups_checks(session: Optional[boto3.Session] = None) -> List[CheckResult]:
     session = session or boto3.Session()
     ec2 = session.client("ec2")
@@ -130,6 +165,8 @@ def scan_security_groups_checks(session: Optional[boto3.Session] = None) -> List
     results: List[CheckResult] = []
     for group in groups:
         results.extend(_check_security_group(group, region))
+        if group.get("GroupName") == "default":
+            results.append(_check_default_security_group(group, region))
     return results
 
 

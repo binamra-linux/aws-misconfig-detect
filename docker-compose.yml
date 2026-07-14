@@ -1,0 +1,24 @@
+services:
+  cloudsentinel:
+    build: .
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    volumes:
+      # Persists the user accounts and scan history across restarts.
+      - cloudsentinel-data:/app/data
+      # Optional: reuse your existing AWS CLI credentials instead of putting keys
+      # in .env. Requires AWS_PROFILE to be set in .env.
+      - ${HOME}/.aws:/root/.aws:ro
+    restart: unless-stopped
+
+    # Do NOT scale this to multiple replicas or add --workers > 1. Scan state is
+    # held in process memory and the scheduler runs per-process, so a second
+    # instance would serve inconsistent findings and duplicate every nightly scan
+    # (and every alert email).
+    deploy:
+      replicas: 1
+
+volumes:
+  cloudsentinel-data:

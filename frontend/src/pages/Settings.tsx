@@ -7,7 +7,7 @@ import { Input } from "@/components/ui/input"
 import { Skeleton } from "@/components/ui/skeleton"
 import { getConfig, updateConfig } from "@/lib/api"
 
-export function Settings() {
+export function Settings({ onReset, resetting }: { onReset: () => void; resetting: boolean }) {
   const queryClient = useQueryClient()
   const { data, isLoading } = useQuery({ queryKey: ["config"], queryFn: getConfig })
   const [days, setDays] = useState("")
@@ -35,8 +35,12 @@ export function Settings() {
         </CardHeader>
         <CardContent className="space-y-3 text-sm">
           <div className="flex justify-between">
-            <span className="text-muted-foreground">Region</span>
+            <span className="text-muted-foreground">Default region</span>
             <span className="font-mono">{data?.aws_region}</span>
+          </div>
+          <div className="flex justify-between gap-4">
+            <span className="shrink-0 text-muted-foreground">Scanned regions</span>
+            <span className="truncate font-mono">{data?.aws_regions}</span>
           </div>
           <div className="flex justify-between">
             <span className="text-muted-foreground">Profile / credentials</span>
@@ -54,6 +58,63 @@ export function Settings() {
           <div className="flex justify-between">
             <span className="text-muted-foreground">Groq model</span>
             <span className="font-mono">{data?.groq_model}</span>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Scheduled Scans</CardTitle>
+          <CardDescription>
+            Runs automatically in the background and emails you when a <em>new</em> issue appears.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3 text-sm">
+          <div className="flex justify-between">
+            <span className="text-muted-foreground">Status</span>
+            <span className={data?.schedule.enabled ? "font-medium text-primary" : "text-muted-foreground"}>
+              {data?.schedule.enabled ? "Enabled" : "Disabled"}
+            </span>
+          </div>
+          {data?.schedule.enabled && (
+            <>
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">Schedule</span>
+                <span className="font-mono">{data.schedule.cron}</span>
+              </div>
+              <div className="flex justify-between gap-4">
+                <span className="shrink-0 text-muted-foreground">Next run</span>
+                <span className="truncate">
+                  {data.schedule.next_run ? new Date(data.schedule.next_run).toLocaleString() : "—"}
+                </span>
+              </div>
+            </>
+          )}
+          <div className="flex justify-between gap-4">
+            <span className="shrink-0 text-muted-foreground">Email alerts</span>
+            <span className="truncate">
+              {data?.schedule.alerts_configured
+                ? data.schedule.alert_recipients.join(", ")
+                : "Not configured"}
+            </span>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Remediation</CardTitle>
+          <CardDescription>
+            CloudSentinel is read-only by default. One-click fixes require write access and must be
+            explicitly enabled.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3 text-sm">
+          <div className="flex justify-between">
+            <span className="text-muted-foreground">One-click fixes</span>
+            <span className={data?.remediation_enabled ? "font-medium text-primary" : "text-muted-foreground"}>
+              {data?.remediation_enabled ? "Enabled (write access)" : "Disabled (read-only)"}
+            </span>
           </div>
         </CardContent>
       </Card>
@@ -89,6 +150,29 @@ export function Settings() {
             Save
           </Button>
           <span className="text-sm text-muted-foreground">Current: {data?.iam_unused_key_days} days</span>
+        </CardContent>
+      </Card>
+
+      <Card className="md:col-span-2 ring-destructive/30">
+        <CardHeader>
+          <CardTitle className="text-destructive">Danger Zone</CardTitle>
+          <CardDescription>
+            Clears the current scan results and all scan history permanently. Your AWS account
+            itself is never touched — this only resets CloudSentinel's local state.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <Button
+            variant="destructive"
+            disabled={resetting}
+            onClick={() => {
+              if (window.confirm("Reset all scan data and history? This can't be undone.")) {
+                onReset()
+              }
+            }}
+          >
+            {resetting ? "Resetting..." : "Reset & Clear History"}
+          </Button>
         </CardContent>
       </Card>
     </div>

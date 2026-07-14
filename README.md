@@ -7,18 +7,43 @@ concrete remediation steps for each one.
 
 Two front ends share the same detection backend:
 - A **Streamlit dashboard** (`dashboard/app.py`) — quick, single-file, good for a fast check.
-- A **React web app** (`frontend/` + `api/`) — six tabs (Overview, Findings, Resources,
-  Compliance, History, Settings), a security score, scan history trends, and a PDF
-  report export. This is the more polished, thesis-presentation-facing UI.
+- A **React web app** (`frontend/` + `api/`) — login-protected, with seven tabs (Home,
+  Overview, Findings, Resources, Compliance, History, Settings), a security score, live
+  scan progress, scan history trends, one-click remediation, and a PDF report export.
+
+## Quick start (Docker)
+
+```bash
+cp .env.example .env      # fill in AWS + Groq credentials
+docker compose up
+```
+
+Open http://localhost:8000. The first account you create becomes the administrator;
+registration closes automatically afterwards.
+
+> Run a **single instance**. Scan state is held in process memory and the scheduler runs
+> per-process, so a second replica would serve inconsistent findings and duplicate every
+> scheduled scan (and every alert email).
 
 ## Status
 
-- ✅ S3: public read/write access, missing encryption, missing versioning
-- ✅ IAM: overly permissive policies, missing MFA, unused access keys, root account MFA/access keys
-- ✅ Security groups: 0.0.0.0/0 / ::/0 on ports 22/3389/3306/5432
+Detection (all read-only):
+
+- ✅ S3: account-level Block Public Access, public read/write, missing encryption, missing versioning
+- ✅ IAM: overly permissive policies, missing MFA, unused access keys, root account MFA/access keys, weak password policy
+- ✅ Security groups: 0.0.0.0/0 / ::/0 on ports 22/3389/3306/5432, default SG carrying rules
 - ✅ EBS: unencrypted volumes, publicly shared snapshots
 - ✅ RDS: publicly accessible instances, missing storage encryption, publicly shared manual snapshots
 - ✅ CloudTrail: no multi-region trail actively logging, log file validation disabled
+
+Platform:
+
+- ✅ **Login** — multi-user accounts, PBKDF2-hashed passwords, httpOnly session cookie
+- ✅ **Multi-region scanning** — regional detectors run across every enabled region, in parallel
+- ✅ **Scheduled scans** — cron-driven background scans with email alerts on *new* findings
+- ✅ **One-click remediation** — opt-in, off by default (see below)
+- ✅ **Tests** — `pytest` + `moto`, no live AWS calls
+- ✅ **Docker** — single-command deploy
 
 Every check records **both** a pass and a fail outcome internally (see "CheckResult
 vs Finding" below), which is what powers the Resources tab, the Compliance tab, and
@@ -28,27 +53,38 @@ the security score.
 
 ```
 backend/
-  config.py              # loads AWS/Groq settings from env vars / .env
+  config.py              # all settings, loaded from env vars / .env
   models.py              # Finding / CheckResult / Severity data model
-  scanner.py             # run_scan() (findings only) + run_full_scan() (all checks)
+  scanner.py             # region planning + run_scan() / run_full_scan()
+  scan_service.py        # current-scan state + the single-scan lock (shared by API & scheduler)
   scoring.py             # server-side security score (single source of truth)
   history.py             # scan history persistence (data/scan_history.json)
+  users.py               # login accounts, PBKDF2-hashed (data/users.json)
+  scheduler.py           # cron-driven background scans (APScheduler)
   detectors/
-    s3_detector.py         # implemented
-    iam_detector.py        # implemented
-    sg_detector.py         # implemented
-    ebs_detector.py        # implemented
-    rds_detector.py        # implemented
-    cloudtrail_detector.py # implemented
+    s3_detector.py         # + account-level Block Public Access
+    iam_detector.py        # + password policy
+    sg_detector.py         # + default security group
+    ebs_detector.py
+    rds_detector.py
+    cloudtrail_detector.py
+  remediation/
+    __init__.py            # the ONLY code that writes to AWS; opt-in, off by default
+  notify/
+    email_client.py        # SMTP alerts for new findings
   ai/
     groq_client.py         # Groq (OpenAI-compatible) explanation generator
 api/
-  main.py                  # FastAPI backend for the React web app
+  main.py                  # FastAPI: auth, scan (+SSE stream), findings, remediation
 frontend/                  # Vite + React + TypeScript + Tailwind + shadcn/ui web app
 dashboard/
   app.py                   # Streamlit UI (alternative front end, still works standalone)
-data/
-  scan_history.json        # gitignored, created on first scan via the web app
+tests/                     # pytest + moto; no live AWS calls
+data/                      # gitignored
+  scan_history.json        # created on first scan
+  users.json               # created on first login
+Dockerfile                 # multi-stage: builds the SPA, serves it from FastAPI
+docker-compose.yml
 ```
 
 ## Setup
@@ -105,6 +141,10 @@ data/
            "iam:ListAccessKeys",
            "iam:GetAccessKeyLastUsed",
            "iam:GetAccountSummary",
+           "iam:GetAccountPasswordPolicy",
+           "s3:GetAccountPublicAccessBlock",
+           "sts:GetCallerIdentity",
+           "ec2:DescribeRegions",
            "ec2:DescribeSecurityGroups",
            "ec2:DescribeVolumes",
            "ec2:DescribeSnapshots",
@@ -121,9 +161,11 @@ data/
    }
    ```
 
-   This is intentionally read-only — the tool never modifies your account. If you
-   run the `scripts/create_test_*.py` fixtures (see below), they need extra
-   *temporary* write permissions of their own — remove those again afterwards.
+   This is intentionally read-only — by default the tool never modifies your
+   account. Extra permissions are needed only if you opt into
+   [one-click remediation](#one-click-remediation-opt-in). If you run the
+   `scripts/create_test_*.py` fixtures (see below), they need their own
+   *temporary* write permissions — remove those again afterwards.
 
 4. **Only if you want the React web app** (the Streamlit dashboard needs nothing
    beyond step 1): install Node.js. This project uses `nvm` so it doesn't need
@@ -187,22 +229,159 @@ python -m uvicorn api.main:app --port 8000
 Open http://localhost:8000 — FastAPI serves the built React app directly
 (`frontend/dist/`) alongside the API.
 
-### The six tabs
+### The seven tabs
 
+- **Home** — landing page: last scan summary, top issues needing attention, and
+  shortcuts into every other section.
 - **Overview** — security score gauge, severity breakdown, per-resource-type
   counts, latest findings.
 - **Findings** — searchable/filterable table of failures only, click a row to
-  expand it inline for raw detail + an on-demand AI explanation, "Download
-  Report" for a PDF export.
+  expand it inline for raw detail, an on-demand AI explanation, and a one-click
+  fix where one is available. "Download Report" exports a PDF.
 - **Resources** — every check performed against every resource, pass *and*
   fail, not just misconfigurations.
 - **Compliance** — findings grouped by CIS AWS Foundations Benchmark v1.5.0
   control (best-effort mapping — see caveat below).
 - **History** — score and finding-count trend across past scans, persisted to
   `data/scan_history.json`.
-- **Settings** — current AWS/Groq config (read-only) plus a live-editable
-  "unused access key" threshold that takes effect on the next scan with no
-  restart needed.
+- **Settings** — AWS/Groq/schedule/remediation status, a live-editable "unused
+  access key" threshold, and a reset button that clears all scan data.
+
+## Login
+
+The web app requires a login. The **first** account created becomes the administrator,
+and registration closes permanently after that — so the app isn't world-registrable if
+you expose the port.
+
+Passwords are hashed with PBKDF2-HMAC-SHA256 (600,000 iterations, stdlib only — no
+native build deps) and stored in `data/users.json`. Plaintext passwords are never
+stored or logged.
+
+Sessions are a **signed, httpOnly cookie**, not a bearer token. That's forced by the
+browser: `EventSource` (which powers the live scan-progress stream) cannot set an
+`Authorization` header, so a cookie is the only scheme that authenticates the *whole*
+API including the stream.
+
+Set `SESSION_SECRET` in `.env` — otherwise a random one is generated at startup and
+every session is invalidated on restart:
+
+```bash
+python3 -c "import secrets; print(secrets.token_hex(32))"
+```
+
+If you serve over HTTPS, also set `SESSION_HTTPS_ONLY=true`. Leave it `false` on
+plain-HTTP localhost — browsers silently drop `Secure` cookies over `http://`, which
+looks like "login succeeds, then immediately logs out".
+
+## Multi-region scanning
+
+Set `AWS_REGIONS` in `.env`:
+
+| Value | Behaviour |
+|---|---|
+| *(blank)* | Only `AWS_REGION`. The default — fast, no surprises. |
+| `all` | Every region enabled on the account (needs `ec2:DescribeRegions`). |
+| `us-east-1,eu-west-1` | Exactly those regions. |
+
+Only the **regional** detectors (security groups, EBS, RDS) loop over regions; they run
+in parallel. S3, IAM and CloudTrail are global and always scanned once.
+
+CloudTrail deserves a note: `describe_trails()` returns *shadow trails* — replicas of
+multi-region and organization trails from every other region — so a single call already
+sees everything. Scanning it per-region would report the same trail N times.
+
+## Scheduled scans and email alerts
+
+```bash
+SCAN_SCHEDULE_ENABLED=true
+SCAN_SCHEDULE_CRON=0 2 * * *      # 02:00 daily
+
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=587
+SMTP_USER=you@example.com
+SMTP_PASSWORD=your-app-password
+SMTP_FROM=you@example.com
+ALERT_TO=security@example.com,ops@example.com
+```
+
+Alerts fire only on findings that are **new since the previous scan**. An unchanged
+backlog is never re-sent — a nightly email repeating the same twelve known issues is
+how alerts get filtered into a folder and ignored.
+
+A scheduled scan and a manual scan can never run at once: both go through the same
+lock, and the scheduled one skips (rather than queues) if you're already scanning.
+
+## One-click remediation (opt-in)
+
+**Disabled by default.** CloudSentinel is read-only unless you explicitly turn this on —
+that guarantee is worth more than the convenience, so it's an opt-in rather than a
+default.
+
+```bash
+REMEDIATION_ENABLED=true
+```
+
+Fixes available today:
+
+| Finding | What the fix does |
+|---|---|
+| `S3_PUBLIC_READ` / `S3_PUBLIC_WRITE` | Enables all four Block Public Access settings |
+| `S3_NO_ENCRYPTION` | Enables default AES256 encryption |
+| `S3_VERSIONING_DISABLED` | Enables versioning |
+| `SG_OPEN_SENSITIVE_PORT` | Revokes **only** the public-internet rule for that port |
+| `EBS_SNAPSHOT_PUBLIC` | Stops sharing the snapshot with all AWS accounts |
+| `RDS_SNAPSHOT_PUBLIC` | Stops sharing the snapshot with all AWS accounts |
+| `CLOUDTRAIL_LOG_VALIDATION_DISABLED` | Enables log file validation |
+
+Every fix is a single, reversible call, and the UI shows the exact AWS API call and
+asks you to confirm before it runs. **No fix deletes data** — buckets get *blocked*,
+not emptied; snapshots get *unshared*, not removed; the security-group fix revokes only
+the specific flagged rule and leaves every other rule alone.
+
+This needs write permissions **in addition to** the read-only policy above — attach
+this separately, and only if you want remediation:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "s3:PutBucketPublicAccessBlock",
+        "s3:PutEncryptionConfiguration",
+        "s3:PutBucketVersioning",
+        "ec2:RevokeSecurityGroupIngress",
+        "ec2:ModifySnapshotAttribute",
+        "rds:ModifyDBSnapshotAttribute",
+        "cloudtrail:UpdateTrail"
+      ],
+      "Resource": "*"
+    }
+  ]
+}
+```
+
+## Tests
+
+```bash
+pip install -r requirements.txt -r requirements-dev.txt
+pytest
+```
+
+102 tests, using `moto` to mock AWS — **no live AWS calls and no credentials needed**.
+`tests/conftest.py` force-neutralises `AWS_PROFILE` and injects fake credentials
+specifically so that a developer with a real profile in their `.env` can't accidentally
+have the suite hit their live account.
+
+Two coverage gaps are documented honestly in the test files rather than papered over,
+both caused by moto (not by the detectors):
+
+- moto doesn't implement `s3:GetBucketPolicyStatus`, so only the **ACL-based** half of
+  S3 public-access detection is covered; the policy-based half is verified against real
+  AWS instead.
+- moto's `get_account_summary()` hardcodes the root MFA/access-key values, so only one
+  branch of each root-account check is reachable.
 
 ## CheckResult vs Finding
 

@@ -47,6 +47,15 @@ const CIS_MAP: Record<string, ComplianceControl> = {
     control: "3.2",
     title: "Ensure CloudTrail log file validation is enabled",
   },
+  IAM_WEAK_PASSWORD_POLICY: {
+    control: "1.8-1.11",
+    title:
+      "Ensure the IAM password policy requires a minimum length of 14 and at least one uppercase, lowercase, number and symbol",
+  },
+  SG_DEFAULT_ALLOWS_TRAFFIC: {
+    control: "5.4",
+    title: "Ensure the default security group of every VPC restricts all traffic",
+  },
 }
 
 const SG_PORT_MAP: Record<number, ComplianceControl> = {

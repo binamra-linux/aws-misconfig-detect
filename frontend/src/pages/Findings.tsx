@@ -10,6 +10,7 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { SeverityBadge } from "@/components/SeverityBadge"
 import { EmptyState } from "@/components/EmptyState"
+import { RemediationPanel } from "@/components/RemediationPanel"
 import { cn } from "@/lib/utils"
 import { explainFinding } from "@/lib/api"
 import { generateReportPdf } from "@/lib/report"
@@ -170,7 +171,7 @@ export function Findings({ data, isLoading }: { data?: FindingsResponse; isLoadi
                           <div>
                             <h4 className="mb-2 text-sm font-semibold">AI Explanation &amp; Fix</h4>
                             {explanations[f.id] ? (
-                              <div className="prose prose-sm prose-invert max-w-none prose-headings:text-sm prose-headings:font-semibold prose-p:leading-relaxed prose-pre:bg-background">
+                              <div className="prose prose-invert max-w-none prose-headings:text-sm prose-headings:font-semibold prose-p:text-[17px] prose-p:leading-[1.47] prose-p:tracking-[-0.02em] prose-li:text-[17px] prose-li:leading-[1.47] prose-pre:bg-background">
                                 <ReactMarkdown>{explanations[f.id]}</ReactMarkdown>
                               </div>
                             ) : (
@@ -185,6 +186,8 @@ export function Findings({ data, isLoading }: { data?: FindingsResponse; isLoadi
                               </Button>
                             )}
                           </div>
+
+                          {data && <RemediationPanel scanId={data.scan_id} findingId={f.id} />}
                         </div>
                       </TableCell>
                     </TableRow>

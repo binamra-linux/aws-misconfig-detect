@@ -6,7 +6,6 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { SeverityBadge } from "@/components/SeverityBadge"
 import { EmptyState } from "@/components/EmptyState"
-import { Welcome } from "@/components/Welcome"
 import { getScoreColor } from "@/lib/score"
 import type { FindingsResponse, Severity } from "@/lib/api"
 
@@ -54,16 +53,17 @@ export function Overview({
   const findings = data?.findings ?? []
   const total = findings.length
 
-  if (!data?.scanned_at) {
-    return <Welcome onScan={onScan} scanning={scanning} />
-  }
-
   if (total === 0) {
     return (
       <EmptyState
         icon={<ShieldCheck className="size-6" />}
-        title="No issues found"
-        description="Your last scan didn't turn up any misconfigurations. Nice work — run another scan any time to re-check."
+        title={data?.scanned_at ? "No issues found" : "No scan data yet"}
+        description={
+          data?.scanned_at
+            ? "Your last scan didn't turn up any misconfigurations. Nice work — run another scan any time to re-check."
+            : "Run a scan to see your security score, severity breakdown, and resource coverage here."
+        }
+        action={{ label: scanning ? "Scanning..." : "Run Scan", onClick: onScan }}
       />
     )
   }

@@ -1,0 +1,8 @@
+# Test-only dependencies. Install alongside requirements.txt:
+#   pip install -r requirements.txt -r requirements-dev.txt
+-r requirements.txt
+
+pytest>=8.0
+# moto 5.x -- note the per-service decorators (@mock_s3, @mock_ec2, ...) were
+# removed in 5.0; everything uses the single @mock_aws decorator now.
+moto[s3,ec2,iam,rds,cloudtrail]>=5.2

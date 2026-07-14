@@ -12,7 +12,7 @@ export function SeverityBadge({ severity }: { severity: Severity }) {
   return (
     <span
       className={cn(
-        "inline-flex items-center rounded-md border px-2 py-0.5 text-xs font-semibold whitespace-nowrap",
+        "inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-semibold whitespace-nowrap",
         SEVERITY_STYLES[severity],
       )}
     >
